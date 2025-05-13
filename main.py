@@ -21,10 +21,11 @@ import redis.asyncio as redis
 from starlette.datastructures import Headers
 import uvicorn
 
+from api_key import APIKey
 from db_connection import MongoDBConnection
 from role import Endpoint, Role, Method
 from user import User
-from session import Session, SessionManager
+from session import SessionAPIKey, SessionUser, SessionManager
 
 URL: str = "http://localhost:8000"
 REDIS_URL: str = "redis://localhost:6379"
@@ -43,6 +44,7 @@ System: MongoDBConnection = MongoDBConnection(
 # This will create the database and the collections if they do not exist
 Role.db_create_collection(System)
 User.db_create_collection(System)
+APIKey.db_create_collection(System)
 
 # Create default roles
 if not Role.db_find_by_rolename(System, "boss"):
@@ -179,13 +181,24 @@ def check_role(role: Role, request: Endpoint) -> bool:
             return True
     return False
 
-def get_user_from_session(session: Session) -> User:
-    # get user
-    user_id = session.user_id
-    user = User.db_find_by_id(System, user_id)
-    if user is None:
+def get_user_or_apikey_from_session(session: Union[SessionUser, SessionAPIKey]) -> Union[User, APIKey]:
+    
+    if isinstance(session, SessionUser):
+        # get user
+        user_id = session.user_id
+        user = User.db_find_by_id(System, user_id)
+        if user is None:
+            raise HTTPException(status_code=403, detail="Invalid authentication token")
+        return user
+    elif isinstance(session, SessionAPIKey):
+        # get api key
+        api_key_id = session.apikey_id
+        api_key = APIKey.db_find_by_id(System, api_key_id)
+        if api_key is None:
+            raise HTTPException(status_code=403, detail="Invalid authentication token")
+        return api_key
+    else:
         raise HTTPException(status_code=403, detail="Invalid authentication token")
-    return user
 
 # get session from token
 def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Request, HTTPAuthorizationCredentials], Awaitable[object]]:
@@ -203,19 +216,19 @@ def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Req
             raise HTTPException(status_code=403, detail="Invalid authentication token")
 
         # get user
-        user = get_user_from_session(session)
+        user_or_apikey = get_user_or_apikey_from_session(session)
         
-        user_role_ids = user.roles
+        role_ids = user_or_apikey.roles
 
         # Fetch all roles from the database.
         roles_db = Role.db_find_all(System)
-        user_roles = [user_role for user_role in roles_db.values() if user_role._id in user_role_ids]
+        roles = [user_role for user_role in roles_db.values() if user_role._id in role_ids]
 
-        user_roles_names = [role.rolename for role in user_roles]
+        roles_names = [role.rolename for role in roles]
         
         # If specific required roles are provided, check if the user has at least one of them.
         if required_roles is not None:
-            if any(role.rolename in user_roles_names for role in required_roles if role is not None):
+            if any(role.rolename in roles_names for role in required_roles if role is not None):
                 return session
 
         # current request method and path
@@ -226,7 +239,7 @@ def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Req
 
 
         # Build a list of Role objects corresponding to the user's roles.
-        roles_list = [role_obj for role_id, role_obj in roles_db.items() if role_id in user_role_ids]
+        roles_list = [role_obj for role_id, role_obj in roles_db.items() if role_id in role_ids]
 
         # Check if any of the user's roles permit access to the requested endpoint.
         for role_obj in roles_list:
@@ -244,8 +257,10 @@ def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Req
 # ---------------------------
 # Auth models
 class AuthRequest(BaseModel):
-    username: str
-    password: str
+    type: str = "user" # user or apikey
+    username: Optional[str] = None
+    password: Optional[str] = None
+    key: Optional[str] = None
 
 class AuthUser(BaseModel):
     id: str
@@ -253,11 +268,19 @@ class AuthUser(BaseModel):
     roles: list[str]
     last_login: Optional[datetime]
 
+class AuthAPIKey(BaseModel):
+    id: str
+    key: str
+    roles: list[str]
+    created_at: datetime
+    expiration: Optional[datetime]
+
 class AuthResponse(BaseModel):
     token: str
+    session_type: str
     creation_date: datetime
     expiration_date: datetime
-    user: AuthUser
+    user: Union[AuthUser, AuthAPIKey]
 
 @app.post(
     "/api/v1/auth/token",
@@ -267,27 +290,55 @@ class AuthResponse(BaseModel):
 )
 async def api_auth_login(auth: AuthRequest) -> AuthResponse:
     """Authenticate a user and create a new session token."""
-    try:
-        session, user = await SM.login(System, auth.username, auth.password)
-    except Exception as e:
-        if str(e) == "User not found":
-            raise HTTPException(status_code=404, detail="Username or password are wrong")
-        elif str(e) == "Incorrect password":
-            raise HTTPException(status_code=403, detail="Username or password are wrong")
-        else:
-            raise e
-    
-    return AuthResponse(
-        token=session._id,
-        creation_date=session.creation_date,
-        expiration_date=session.expiration_date,
-        user=AuthUser(
-            id=user._id,
-            username=user.username,
-            last_login=user.last_login,
-            roles=user.roles
+    if auth.type == "user" and auth.username is not None and auth.password is not None:
+        try:
+            session, user = await SM.login(System, auth.username, auth.password)
+        except Exception as e:
+            if str(e) == "User not found":
+                raise HTTPException(status_code=404, detail="Username or password are wrong")
+            elif str(e) == "Incorrect password":
+                raise HTTPException(status_code=403, detail="Username or password are wrong")
+            else:
+                raise e
+        
+        return AuthResponse(
+            token=session._id,
+            session_type="user",
+            creation_date=session.creation_date,
+            expiration_date=session.expiration_date,
+            user=AuthUser(
+                id=user._id,
+                username=user.username,
+                last_login=user.last_login,
+                roles=user.roles
+            )
         )
-    )
+    elif auth.type == "apikey" and auth.key is not None:
+        try:
+            session_api, apikey = await SM.login_apikey(System, auth.key)
+        except Exception as e:
+            if str(e) == "APIKey not found":
+                raise HTTPException(status_code=404, detail="APIKey not found")
+            elif str(e) == "APIKey expired":
+                raise HTTPException(status_code=403, detail="APIKey expired")
+            else:
+                raise e
+
+        return AuthResponse(
+            token=session_api._id,
+            session_type="apikey",
+            creation_date=session_api.creation_date,
+            expiration_date=session_api.expiration_date,
+            user=AuthAPIKey(
+                id=apikey._id,
+                key=apikey.key,
+                roles=apikey.roles,
+                created_at=apikey.created_at,
+                expiration=apikey.expiration
+            )
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Invalid authentication type. Must be 'user' or 'apikey'.")
 
 
 @app.get(
@@ -296,23 +347,40 @@ async def api_auth_login(auth: AuthRequest) -> AuthResponse:
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="Return the current authentication sessions details, including token and user information."
 )
-async def api_auth_status(session: Session = Depends(auth())) -> AuthResponse:
+async def api_auth_status(session: SessionUser = Depends(auth())) -> AuthResponse:
     """Check the current authentication session status."""
 
     # get user
-    user = get_user_from_session(session)
-
-    return AuthResponse(
-        token=session._id,
-        creation_date=session.creation_date,
-        expiration_date=session.expiration_date,
-        user=AuthUser(
-            id=user._id,
-            username=user.username,
-            roles=user.roles,
-            last_login=user.last_login
+    user_or_apikey = get_user_or_apikey_from_session(session)
+    if isinstance(user_or_apikey, User):
+        return AuthResponse(
+            token=session._id,
+            session_type="user",
+            creation_date=session.creation_date,
+            expiration_date=session.expiration_date,
+            user=AuthUser(
+                id=user_or_apikey._id,
+                username=user_or_apikey.username,
+                roles=user_or_apikey.roles,
+                last_login=user_or_apikey.last_login
+            )
         )
-    )
+    elif isinstance(user_or_apikey, APIKey):
+        return AuthResponse(
+            token=session._id,
+            session_type="apikey",
+            creation_date=session.creation_date,
+            expiration_date=session.expiration_date,
+            user=AuthAPIKey(
+                id=user_or_apikey._id,
+                key=user_or_apikey.key,
+                roles=user_or_apikey.roles,
+                created_at=user_or_apikey.created_at,
+                expiration=user_or_apikey.expiration
+            )
+        )
+    else:
+        raise HTTPException(status_code=403, detail="Invalid authentication token")
 
 # Logout model
 class OK(BaseModel):
@@ -324,7 +392,7 @@ class OK(BaseModel):
     dependencies=[Depends(RateLimiter(times=5, minutes=1))],
     description="Logout the current user session, invalidating the session token."
 )
-async def api_auth_logout(session: Session = Depends(auth())) -> OK:
+async def api_auth_logout(session: SessionUser = Depends(auth())) -> OK:
     await session.logout()
     return OK(ok=True)
 
@@ -338,25 +406,42 @@ class AuthSessionResponse(BaseModel):
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="For administrative users: Retrieve a list of all active sessions with detailed session information."
 )
-async def api_auth_sessions(session: Session = Depends(auth([BOSE_ROLE]))) -> AuthSessionResponse:
+async def api_auth_sessions(session: SessionUser = Depends(auth([BOSE_ROLE]))) -> AuthSessionResponse:
     sessions = await SM.get_sessions()
     return_sessions: List[AuthResponse] = []
     for s in sessions.values():
+        # get user or apikey
+        user_or_apikey = get_user_or_apikey_from_session(s)
 
-        # get user
-        user = get_user_from_session(s)
-
-        return_sessions.append(AuthResponse(
-            token=s._id,
-            creation_date=s.creation_date,
-            expiration_date=s.expiration_date,
-            user=AuthUser(
-                id=user._id,
-                username=user.username,
-                roles=user.roles,
-                last_login=user.last_login
-            )
-        ))
+        if isinstance(user_or_apikey, User):
+            return_sessions.append(AuthResponse(
+                token=s._id,
+                session_type="user",
+                creation_date=s.creation_date,
+                expiration_date=s.expiration_date,
+                user=AuthUser(
+                    id=user_or_apikey._id,
+                    username=user_or_apikey.username,
+                    roles=user_or_apikey.roles,
+                    last_login=user_or_apikey.last_login
+                )
+            ))
+        elif isinstance(user_or_apikey, APIKey):
+            return_sessions.append(AuthResponse(
+                token=s._id,
+                session_type="apikey",
+                creation_date=s.creation_date,
+                expiration_date=s.expiration_date,
+                user=AuthAPIKey(
+                    id=user_or_apikey._id,
+                    key=user_or_apikey.key,
+                    roles=user_or_apikey.roles,
+                    created_at=user_or_apikey.created_at,
+                    expiration=user_or_apikey.expiration
+                )
+            ))
+        else:
+            continue
 
     return AuthSessionResponse(sessions=return_sessions)
 
@@ -367,7 +452,7 @@ async def api_auth_sessions(session: Session = Depends(auth([BOSE_ROLE]))) -> Au
     dependencies=[Depends(RateLimiter(times=5, minutes=1))],
     description="For administrators only: Logout a specific session identified by its token."
 )
-async def api_auth_session_logout(token: str, session: Session = Depends(auth([BOSE_ROLE]))) -> OK:
+async def api_auth_session_logout(token: str, session: SessionUser = Depends(auth([BOSE_ROLE]))) -> OK:
    
     s = await SM.get_session(token)
     if s is None:
@@ -410,7 +495,7 @@ class RolePutRequest(BaseModel):
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="List all roles in the system."
 )
-async def api_roles(session: Session = Depends(auth([BOSE_ROLE]))) -> List[RoleResponse]:
+async def api_roles(session: SessionUser = Depends(auth([BOSE_ROLE]))) -> List[RoleResponse]:
     """List all roles in the system."""
     roles = Role.db_find_all(System)
     return_roles: List[RoleResponse] = []
@@ -428,7 +513,7 @@ async def api_roles(session: Session = Depends(auth([BOSE_ROLE]))) -> List[RoleR
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="Get a specific role by its ID."
 )
-async def api_role(role_id: str, session: Session = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
+async def api_role(role_id: str, session: SessionUser = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
     """Get a specific role by its ID."""
     role = Role.db_find_by_id(System, role_id)
     if role is None:
@@ -446,7 +531,7 @@ async def api_role(role_id: str, session: Session = Depends(auth([BOSE_ROLE]))) 
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="Create a new role with specified endpoints."
 )
-async def api_create_role(role: RoleCreateRequest, session: Session = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
+async def api_create_role(role: RoleCreateRequest, session: SessionUser = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
     """Create a new role with specified endpoints."""
     # check if path_filter is valid. It should not contain any regex special characters
     if role.endpoints is not None:
@@ -481,7 +566,7 @@ async def api_create_role(role: RoleCreateRequest, session: Session = Depends(au
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="Delete a specific role by its ID."
 )
-async def api_delete_role(role_id: str, session: Session = Depends(auth([BOSE_ROLE]))) -> OK:
+async def api_delete_role(role_id: str, session: SessionUser = Depends(auth([BOSE_ROLE]))) -> OK:
     """Delete a specific role by its ID."""
     role = Role.db_find_by_id(System, role_id)
     if role is None:
@@ -506,7 +591,7 @@ async def api_delete_role(role_id: str, session: Session = Depends(auth([BOSE_RO
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="Update a specific role by its ID."
 )
-async def api_update_role(role_id: str, role: RolePutRequest, session: Session = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
+async def api_update_role(role_id: str, role: RolePutRequest, session: SessionUser = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
     """Update a specific role by its ID."""
     # Convert the incoming endpoints to Endpoint objects
     endpoints = [Endpoint(method=Method(e.method), path_filter=e.path_filter) for e in role.endpoints] if role.endpoints else []
@@ -545,7 +630,7 @@ class UserResponse(BaseModel):
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="List all users in the system."
 )
-async def api_users(session: Session = Depends(auth([BOSE_ROLE]))) -> List[UserResponse]:
+async def api_users(session: SessionUser = Depends(auth([BOSE_ROLE]))) -> List[UserResponse]:
     """List all users in the system."""
     users = User.db_find_all(System)
     return_users: List[UserResponse] = []
@@ -572,7 +657,7 @@ class UserCreate(BaseModel):
 )
 async def api_create_user(
     user: UserCreate,
-    session: Session = Depends(auth([BOSE_ROLE]))
+    session: SessionUser = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Create a new user in the system."""
     # check if the user already exists
@@ -609,7 +694,7 @@ class UserUpdatePassword(BaseModel):
 )
 async def api_change_user_password(
     password_update: UserUpdatePassword,
-    session: Session = Depends(auth([BOSE_ROLE]))
+    session: SessionUser = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Update password for the current user."""
     # Get the current user
@@ -651,7 +736,7 @@ class UserResetPassword(BaseModel):
 )
 async def api_reset_user_password(
     user_and_pw: UserResetPassword,
-    session: Session = Depends(auth([BOSE_ROLE]))
+    session: SessionUser = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Reset the user password."""
     user = User.db_find_by_username(System, user_and_pw.username)
@@ -688,7 +773,7 @@ class UserSetRole(BaseModel):
 )
 async def api_set_user_roles(
     user_roles: UserSetRole,
-    session: Session = Depends(auth([BOSE_ROLE]))
+    session: SessionUser = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Set roles for a user. Only accessible by admin."""
     user = User.db_find_by_username(System, user_roles.username)
@@ -723,7 +808,7 @@ async def api_set_user_roles(
 )
 async def api_delete_user(
     username: str,
-    session: Session = Depends(auth([BOSE_ROLE]))
+    session: SessionUser = Depends(auth([BOSE_ROLE]))
 ) -> dict:
     """Delete a user. Only accessible by admin."""
     user = User.db_find_by_username(System, username)
@@ -735,6 +820,17 @@ async def api_delete_user(
         return {"message": f"User '{username}' deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+# ---------------------------
+# API Key Endpoints
+# ---------------------------
+
+
+
+
 
 
 

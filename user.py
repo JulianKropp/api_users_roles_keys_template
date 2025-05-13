@@ -1,4 +1,3 @@
-
 import uuid
 import json
 from dataclasses import dataclass, field
@@ -27,6 +26,7 @@ class User:
     password_salt: str
     last_login: Optional[datetime] = None
     roles: List[str] = field(default_factory=list)
+    api_keys_ids: List[str] = field(default_factory=list)
     _id: str = field(default_factory=lambda: f"USER-{uuid.uuid4()}")
 
     # Collection name for MongoDB.
@@ -44,7 +44,8 @@ class User:
             "password_hash": self.password_hash,
             "password_salt": self.password_salt,
             "last_login": datetime_to_str(self.last_login),
-            "roles": self.roles
+            "roles": self.roles,
+            "api_keys_ids": self.api_keys_ids  # Added api_keys_ids field
         }
 
     @classmethod
@@ -52,15 +53,14 @@ class User:
         """Rebuild a User object from a dictionary.
         Note: expects that any datetime fields have been encoded as ISO strings.
         """
-        last_login = data.get("last_login")
-        if last_login:
-            last_login = datetime.fromisoformat(last_login)
+        last_login = datetime_from_str(data.get("last_login"))
         return cls(
             username=data["username"],
             password_hash=data["password_hash"],
             password_salt=data["password_salt"],
             last_login=last_login,
             roles=data.get("roles", []),
+            api_keys_ids=data.get("api_keys_ids", []),  # Added api_keys_ids field
             _id=data["_id"]
         )
 
@@ -71,8 +71,9 @@ class User:
             "username": self.username,
             "password_hash": self.password_hash,
             "password_salt": self.password_salt,
-            "last_login": self.last_login.strftime("%Y-%m-%d %H:%M:%S") if self.last_login else None,
-            "roles": self.roles
+            "last_login": datetime_to_str(self.last_login),
+            "roles": self.roles,
+            "api_keys_ids": self.api_keys_ids  # Added api_keys_ids field
         }, indent=4)
 
     def __repr__(self) -> str:
@@ -118,6 +119,13 @@ class User:
                             "description": "must be a string as ISO date or null"
                         },
                         "roles": {
+                            "bsonType": "array",
+                            "description": "must be an array and is required",
+                            "items": {
+                                "bsonType": "string"
+                            }
+                        },
+                        "api_keys_ids": {
                             "bsonType": "array",
                             "description": "must be an array and is required",
                             "items": {
@@ -234,6 +242,7 @@ class User:
             self.password_salt = refreshed_user.password_salt
             self.last_login = refreshed_user.last_login
             self.roles = refreshed_user.roles
+            self.api_keys_ids = refreshed_user.api_keys_ids
         else:
             raise ValueError(f"User with id {self._id} not found in the database.")
 
@@ -274,6 +283,7 @@ class User:
             password_salt=data["password_salt"],
             last_login=datetime_from_str(data["last_login"]) if data["last_login"] else None,
             roles=[str(role) for role in data.get("roles", [])],
+            api_keys_ids=data.get("api_keys_ids", []),  # Added api_keys_ids field
             _id=data["_id"]
         )
 
