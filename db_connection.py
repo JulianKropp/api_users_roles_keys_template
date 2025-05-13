@@ -296,7 +296,7 @@ def main() -> None:
         db_name=MONGODB_DB_NAME
     )
 
-    from .user import User
+    from user import User
     admin_db.create_roles(User)
 
     # print role
