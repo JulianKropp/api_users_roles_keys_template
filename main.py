@@ -608,6 +608,14 @@ async def api_delete_role(role_id: str, session: SessionUser = Depends(auth([BOS
         if role._id in user.roles:
             user.roles.remove(role._id)
             user.db_save(System)
+    
+    # Check if the role is in use by any API key
+    # Remove the role from all API keys
+    apikeys = APIKey.db_find_all(System)
+    for apikey in apikeys:
+        if role._id in apikey.roles:
+            apikey.roles.remove(role._id)
+            apikey.db_save(System)
 
     # Delete the role
     Role.db_delete_by_id(System, role_id)
