@@ -31,13 +31,21 @@ from session import SessionAPIKey, SessionUser, SessionManager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-URL: str = "http://localhost:8000"
-REDIS_URL: str = "redis://localhost:6379"
+# ---------------------------
+# Configuration
+# ---------------------------
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+PORT=int(os.getenv("PORT", 8000))
+EXTERNAL_URL: str = os.getenv("EXTERNAL_URL", "http://localhost:8000")
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 System: MongoDBConnection = MongoDBConnection(
-                mongo_uri="localhost:27017",
-                user="admin", # type: ignore
-                password="admin", # type: ignore
+                mongo_uri=os.getenv("MONGO_URI", "localhost:27017"),
+                user=os.getenv("MONGO_USER", "admin"),
+                password=os.getenv("MONGO_PASSWORD", "admin"),
                 db_name="transcription_service",
                 admin=True
             )
@@ -155,7 +163,7 @@ app = FastAPI(
 # ---------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[URL],  # Allowed Origins from the frontend
+    allow_origins=[EXTERNAL_URL],  # Allowed Origins from the frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1130,7 +1138,7 @@ async def serve_react_app(full_path: str) -> FileResponse:
 # ---------------------------
 async def main() -> None:
     # Configure the server (this does not call asyncio.run() internally)
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
     server = uvicorn.Server(config)
     # Run the server asynchronously
     await asyncio.gather(
