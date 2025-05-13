@@ -385,7 +385,6 @@ class AuthUser(BaseModel):
 
 class AuthAPIKey(BaseModel):
     id: str
-    key: str
     roles: list[str]
     created_at: datetime
     expiration: Optional[datetime]
@@ -453,7 +452,6 @@ async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKe
             expiration_date=session_api.expiration_date,
             api_key=AuthAPIKey(
                 id=apikey._id,
-                key=apikey.key,
                 roles=apikey.roles,
                 created_at=apikey.created_at,
                 expiration=apikey.expiration
@@ -495,7 +493,6 @@ async def api_auth_status(session: Union[SessionUser, SessionAPIKey]= Depends(no
             expiration_date=session.expiration_date,
             api_key=AuthAPIKey(
                 id=user_or_apikey._id,
-                key=user_or_apikey.key,
                 roles=user_or_apikey.roles,
                 created_at=user_or_apikey.created_at,
                 expiration=user_or_apikey.expiration
@@ -560,7 +557,6 @@ async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey]= Depends(
                 expiration_date=s.expiration_date,
                 api_key=AuthAPIKey(
                     id=user_or_apikey._id,
-                    key=user_or_apikey.key,
                     roles=user_or_apikey.roles,
                     created_at=user_or_apikey.created_at,
                     expiration=user_or_apikey.expiration
