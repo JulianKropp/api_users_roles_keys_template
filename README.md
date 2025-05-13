@@ -31,3 +31,4 @@ python3 main.py
 ```
 
 ### Done!
+Open your browser and go to [http://localhost:8000/docs#/](http://localhost:8000/docs#/) to see the API documentation.
