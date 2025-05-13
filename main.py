@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
@@ -26,6 +27,9 @@ from db_connection import MongoDBConnection
 from role import Endpoint, Role, Method
 from user import User
 from session import SessionAPIKey, SessionUser, SessionManager
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 URL: str = "http://localhost:8000"
 REDIS_URL: str = "redis://localhost:6379"
@@ -725,27 +729,27 @@ async def api_change_user_password(
         raise HTTPException(status_code=400, detail=str(e))
 
 class UserResetPassword(BaseModel):
-    username: str
     new_password: str
 
 @app.put(
-    "/api/v1/user/password/reset",
+    "/api/v1/user/{user_id}/password/reset",
     response_model=UserResponse,
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="Reset the user password."
 )
 async def api_reset_user_password(
-    user_and_pw: UserResetPassword,
+    user_id: str,
+    pw: UserResetPassword,
     session: SessionUser = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Reset the user password."""
-    user = User.db_find_by_username(System, user_and_pw.username)
+    user = User.db_find_by_id(System, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
         # Generate new password hash and salt
-        password_hash, password_salt = User.hash_password(user_and_pw.new_password)
+        password_hash, password_salt = User.hash_password(pw.new_password)
 
         # Update user's password in database
         user.password_hash = password_hash
@@ -762,21 +766,21 @@ async def api_reset_user_password(
         raise HTTPException(status_code=400, detail=str(e))
 
 class UserSetRole(BaseModel):
-    username: str
     roles: List[str]
 
 @app.put(
-    "/api/v1/user/roles",
+    "/api/v1/user/{user_id}/roles",
     response_model=UserResponse,
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="Set roles for a user. Requires admin privileges."
 )
 async def api_set_user_roles(
+    user_id: str,
     user_roles: UserSetRole,
     session: SessionUser = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Set roles for a user. Only accessible by admin."""
-    user = User.db_find_by_username(System, user_roles.username)
+    user = User.db_find_by_id(System, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -801,23 +805,23 @@ async def api_set_user_roles(
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete(
-    "/api/v1/user/{username}",
-    response_model=dict,
+    "/api/v1/user/{user_id}",
+    response_model=OK,
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="Delete a user. Requires admin privileges."
 )
 async def api_delete_user(
-    username: str,
+    user_id: str,
     session: SessionUser = Depends(auth([BOSE_ROLE]))
-) -> dict:
+) -> OK:
     """Delete a user. Only accessible by admin."""
-    user = User.db_find_by_username(System, username)
+    user = User.db_find_by_id(System, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
         user.db_delete(System)
-        return {"message": f"User '{username}' deleted successfully"}
+        return OK(ok=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -827,11 +831,281 @@ async def api_delete_user(
 # ---------------------------
 # API Key Endpoints
 # ---------------------------
+class APIKeyResponse(BaseModel):
+    id: str
+    key: str
+    roles: List[str]
+    created_at: datetime
+    expiration: Optional[datetime]
+
+class APIKeyCreateRequest(BaseModel):
+    roles: List[str] = []
+    expiration: Optional[datetime] = None
+
+def _list_apikeys(user_id: str) -> List[APIKeyResponse]:
+    user_obj = User.db_find_by_id(System, user_id)
+    if user_obj is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return [
+        APIKeyResponse(
+            id=apikey._id,
+            key=apikey.key,
+            roles=apikey.roles,
+            created_at=apikey.created_at,
+            expiration=apikey.expiration,
+        )
+        for apikey_id in user_obj.api_keys_ids
+        if (apikey := APIKey.db_find_by_id(System, apikey_id)) is not None
+    ]
 
 
+def _get_apikey(user_id: str, apikey_id: str) -> APIKeyResponse:
+    user_obj = User.db_find_by_id(System, user_id)
+    if user_obj is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if apikey_id not in user_obj.api_keys_ids:
+        raise HTTPException(
+            status_code=403, detail="API key does not belong to the user"
+        )
+
+    apikey = APIKey.db_find_by_id(System, apikey_id)
+    if apikey is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    return APIKeyResponse(
+        id=apikey._id,
+        key=apikey.key,
+        roles=apikey.roles,
+        created_at=apikey.created_at,
+        expiration=apikey.expiration,
+    )
 
 
+def _create_apikey(user_id: str, req: APIKeyCreateRequest) -> APIKeyResponse:
+    user_obj = User.db_find_by_id(System, user_id)
+    if user_obj is None:
+        raise HTTPException(status_code=404, detail="User not found")
 
+    db_roles = Role.db_find_all(System)
+    for role_id in req.roles:
+        if role_id not in [r for r in db_roles]:
+            raise ValueError(f"Role '{role_id}' does not exist")
+
+    new_key = APIKey.new(
+        db_connection=System,
+        expiration=req.expiration,
+        roles=req.roles,
+    )
+
+    try:
+        user_obj.api_keys_ids.append(new_key._id)
+        user_obj.db_update(System)
+        new_key.db_save(System)
+    except Exception:
+        # roll back user change if the key save fails
+        if new_key._id in user_obj.api_keys_ids:
+            user_obj.api_keys_ids.remove(new_key._id)
+            user_obj.db_update(System)
+        raise HTTPException(status_code=500, detail="Failed to create API key")
+
+    return APIKeyResponse(
+        id=new_key._id,
+        key=new_key.key,
+        roles=new_key.roles,
+        created_at=new_key.created_at,
+        expiration=new_key.expiration,
+    )
+
+
+def _delete_apikey(user_id: str, apikey_id: str) -> OK:
+    user_obj = User.db_find_by_id(System, user_id)
+    if user_obj is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if apikey_id not in user_obj.api_keys_ids:
+        raise HTTPException(
+            status_code=403, detail="API key does not belong to the user"
+        )
+
+    apikey = APIKey.db_find_by_id(System, apikey_id)
+    if apikey is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    try:
+        user_obj.api_keys_ids.remove(apikey._id)
+        user_obj.db_update(System)
+        apikey.db_delete(System)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to delete API key")
+
+    return OK(ok=True)
+
+
+def _update_apikey(
+    user_id: str, apikey_id: str, req: APIKeyCreateRequest
+) -> APIKeyResponse:
+    user_obj = User.db_find_by_id(System, user_id)
+    if user_obj is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if apikey_id not in user_obj.api_keys_ids:
+        raise HTTPException(
+            status_code=403, detail="API key does not belong to the user"
+        )
+
+    apikey_obj = APIKey.db_find_by_id(System, apikey_id)
+    if apikey_obj is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    db_roles = Role.db_find_all(System)
+    for role_id in req.roles:
+        if role_id not in [r for r in db_roles]:
+            raise ValueError(f"Role '{role_id}' does not exist")
+
+    apikey_obj.roles = req.roles
+    apikey_obj.expiration = req.expiration
+
+    try:
+        apikey_obj.db_update(System)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to update API key")
+
+    return APIKeyResponse(
+        id=apikey_obj._id,
+        key=apikey_obj.key,
+        roles=apikey_obj.roles,
+        created_at=apikey_obj.created_at,
+        expiration=apikey_obj.expiration,
+    )
+
+
+@app.get(
+    "/api/v1/user/{user_id}/apikeys",
+    response_model=List[APIKeyResponse],
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="List all API keys for a specific user.",
+)
+async def api_list_apikeys(
+    user_id: str, session: SessionUser = Depends(auth([BOSE_ROLE]))
+) -> List[APIKeyResponse]:
+    return _list_apikeys(user_id)
+
+
+@app.get(
+    "/api/v1/user/apikeys",
+    response_model=List[APIKeyResponse],
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="List all API keys for the authenticated user.",
+)
+async def api_list_own_apikeys(
+    session: SessionUser = Depends(auth([BOSE_ROLE]))
+) -> List[APIKeyResponse]:
+    return _list_apikeys(session.user_id)
+
+
+@app.get(
+    "/api/v1/user/{user_id}/apikey/{apikey_id}",
+    response_model=APIKeyResponse,
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Get a specific API key for a user.",
+)
+async def api_get_apikey(
+    user_id: str, apikey_id: str, session: SessionUser = Depends(auth([BOSE_ROLE]))
+) -> APIKeyResponse:
+    return _get_apikey(user_id, apikey_id)
+
+
+@app.get(
+    "/api/v1/user/apikey/{apikey_id}",
+    response_model=APIKeyResponse,
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Get one of *your* API keys (user_id from session).",
+)
+async def api_get_own_apikey(
+    apikey_id: str, session: SessionUser = Depends(auth([BOSE_ROLE]))
+) -> APIKeyResponse:
+    return _get_apikey(session.user_id, apikey_id)
+
+
+@app.post(
+    "/api/v1/user/{user_id}/apikey",
+    response_model=APIKeyResponse,
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Create a new API key for a specific user.",
+)
+async def api_create_apikey(
+    user_id: str,
+    apikey: APIKeyCreateRequest,
+    session: SessionUser = Depends(auth([BOSE_ROLE])),
+) -> APIKeyResponse:
+    return _create_apikey(user_id, apikey)
+
+
+@app.post(
+    "/api/v1/user/apikey",
+    response_model=APIKeyResponse,
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Create a new API key for the authenticated user.",
+)
+async def api_create_own_apikey(
+    apikey: APIKeyCreateRequest, session: SessionUser = Depends(auth([BOSE_ROLE]))
+) -> APIKeyResponse:
+    return _create_apikey(session.user_id, apikey)
+
+
+@app.delete(
+    "/api/v1/user/{user_id}/apikey/{apikey_id}",
+    response_model=OK,
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Delete a specific API key for a user.",
+)
+async def api_delete_apikey(
+    user_id: str, apikey_id: str, session: SessionUser = Depends(auth([BOSE_ROLE]))
+) -> OK:
+    return _delete_apikey(user_id, apikey_id)
+
+
+@app.delete(
+    "/api/v1/user/apikey/{apikey_id}",
+    response_model=OK,
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Delete one of *your* API keys.",
+)
+async def api_delete_own_apikey(
+    apikey_id: str, session: SessionUser = Depends(auth([BOSE_ROLE]))
+) -> OK:
+    return _delete_apikey(session.user_id, apikey_id)
+
+
+@app.put(
+    "/api/v1/user/{user_id}/apikey/{apikey_id}",
+    response_model=APIKeyResponse,
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Update a specific API key.",
+)
+async def api_update_apikey(
+    user_id: str,
+    apikey_id: str,
+    apikey: APIKeyCreateRequest,
+    session: SessionUser = Depends(auth([BOSE_ROLE])),
+) -> APIKeyResponse:
+    return _update_apikey(user_id, apikey_id, apikey)
+
+
+@app.put(
+    "/api/v1/user/apikey/{apikey_id}",
+    response_model=APIKeyResponse,
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Update one of *your* API keys.",
+)
+async def api_update_own_apikey(
+    apikey_id: str,
+    apikey: APIKeyCreateRequest,
+    session: SessionUser = Depends(auth([BOSE_ROLE])),
+) -> APIKeyResponse:
+    return _update_apikey(session.user_id, apikey_id, apikey)
 
 
 

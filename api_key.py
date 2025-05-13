@@ -150,14 +150,14 @@ class APIKey:
         db_connection.db.drop_collection(cls.COLLECTION_NAME)
 
     @classmethod
-    def new(cls, db_connection: MongoDBConnection, expiration: Optional[datetime] = None) -> "APIKey":
+    def new(cls, db_connection: MongoDBConnection, expiration: Optional[datetime] = None, roles: Optional[List[str]] = None) -> "APIKey":
         """
         Creates a new APIKey instance and saves it to the database.
         """
         api_key = cls(
             created_at=datetime.now(),
             expiration=expiration,
-            roles=[],
+            roles=roles if roles else [],
         )
         return api_key
     
