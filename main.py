@@ -11,6 +11,7 @@ from typing import AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tup
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -347,6 +348,25 @@ def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Req
     return new_auth
 
 
+def no_auth() -> Callable[[Request, HTTPAuthorizationCredentials], Awaitable[Union[SessionUser, SessionAPIKey]]]:
+    """
+    Authentication dependency that returns a session if access is granted.
+    It first checks if the user has one of the required roles directly.
+    If not, it checks the request path against the API endpoint patterns defined in each role.
+    
+    The API endpoint is printed/formatted (e.g., GET-/endpoint) as indicated in the docstring.
+    """
+    async def new_auth(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)) -> Union[SessionUser, SessionAPIKey]:
+        token = credentials.credentials
+        session = await SM.get_session(token)
+        if session is None:
+            logger.info(f"Session not found for token: {token}")
+            raise HTTPException(status_code=403, detail="Invalid authentication token")
+
+        return session
+
+    return new_auth
+
 # ---------------------------
 # Auth Endpoints
 # ---------------------------
@@ -449,7 +469,7 @@ async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKe
     dependencies=[Depends(RateLimiter(times=1, seconds=1))],
     description="Return the current authentication sessions details, including token and user information."
 )
-async def api_auth_status(session: Union[SessionUser, SessionAPIKey]= Depends(auth())) -> Union[AuthUserResponse, AuthAPIKeyResponse]:
+async def api_auth_status(session: Union[SessionUser, SessionAPIKey]= Depends(no_auth())) -> Union[AuthUserResponse, AuthAPIKeyResponse]:
     """Check the current authentication session status."""
 
     # get user
@@ -495,7 +515,7 @@ class OK(BaseModel):
     dependencies=[Depends(RateLimiter(times=5, minutes=1))],
     description="Logout the current user session, invalidating the session token."
 )
-async def api_auth_logout(session: Union[SessionUser, SessionAPIKey]= Depends(auth())) -> OK:
+async def api_auth_logout(session: Union[SessionUser, SessionAPIKey]= Depends(no_auth())) -> OK:
     await session.logout()
     return OK(ok=True)
 
@@ -1301,6 +1321,37 @@ async def api_update_own_apikey(
 
     return _update_apikey(session.user_id, apikey_id, apikey)
 
+
+
+# ---------------------------
+# API info
+# ---------------------------
+class APIendpointResponse(BaseModel):
+    method: str
+    path: str
+
+@app.get(
+    "/api/v1/endpoints",
+    response_model=List[APIendpointResponse],
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="List all available API endpoints."
+)
+def list_endpoints() -> List[APIendpointResponse]:
+    endpoints: List[APIendpointResponse] = []
+    for route in app.routes:
+        # only include standard HTTP routes (skip websockets, static, etc.)
+        if isinstance(route, APIRoute):
+            for method in sorted(route.methods):
+                # you can also filter by prefix if you only want /api/v1/…
+                # if not route.path.startswith("/api/v1"):
+                #     continue
+                endpoints.append(
+                    APIendpointResponse(
+                        method=method,
+                        path=route.path
+                    )
+                )
+    return endpoints
 
 
 # ---------------------------
