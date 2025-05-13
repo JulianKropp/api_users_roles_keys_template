@@ -11,9 +11,13 @@ from db_connection import MongoDBConnection
 
 
 def datetime_to_str(dt: Optional[datetime]) -> Optional[str]:
+    if isinstance(dt, str):
+        return dt
     return dt.isoformat() if dt else None
 
 def datetime_from_str(dt_str: Optional[str]) -> Optional[datetime]:
+    if isinstance(dt_str, datetime):
+        return dt_str
     return datetime.fromisoformat(dt_str) if dt_str else None
 
 # Define a module-level constant for the collection name.
@@ -40,7 +44,7 @@ class APIKey:
     def __post_init__(self):
         # Convert string dates to datetime objects if they are not None.
         self.created_at = datetime_from_str(self.created_at)
-        self.updated_at = datetime_from_str(self.updated_at)
+        self.expiration = datetime_from_str(self.expiration)
 
     def to_dict(self) -> dict:
         """
