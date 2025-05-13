@@ -246,6 +246,30 @@ class SessionManager:
         
         return sessions
 
+    async def get_sessions_by_user(self, user_id: str) -> List[SessionUser]:
+        """Retrieve all sessions for a specific user."""
+        sessions: List[SessionUser] = []
+        keys = await self.redis.keys(SESSION_PREFIX_USER + "*")
+        for key in keys:
+            json_str = await self.redis.get(key)
+            if json_str:
+                session = SessionUser.from_json(json_str)
+                if session.user_id == user_id:
+                    sessions.append(session)
+        return sessions
+    
+    async def get_sessions_by_apikey(self, apikey_id: str) -> List[SessionAPIKey]:
+        """Retrieve all sessions for a specific API key."""
+        sessions: List[SessionAPIKey] = []
+        keys = await self.redis.keys(SESSION_PREFIX_APIKEY + "*")
+        for key in keys:
+            json_str = await self.redis.get(key)
+            if json_str:
+                session = SessionAPIKey.from_json(json_str)
+                if session.apikey_id == apikey_id:
+                    sessions.append(session)
+        return sessions
+
 
 # --- Test the Simplified Session Manager ---
 async def test_session_manager() -> None:
