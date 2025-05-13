@@ -618,7 +618,7 @@ async def api_change_user_password(
         raise HTTPException(status_code=404, detail="User not found")
 
     # Verify current password
-    if not User.verify_password(password_update.current_password, user.password_hash, user.password_salt):
+    if not user.verify_password(password_update.current_password):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
 
     try:
@@ -628,7 +628,7 @@ async def api_change_user_password(
         # Update user's password in database
         user.password_hash = password_hash
         user.password_salt = password_salt
-        User.db_update(System, user)
+        user.db_update(System)
 
         return UserResponse(
             id=user._id,
@@ -665,7 +665,7 @@ async def api_reset_user_password(
         # Update user's password in database
         user.password_hash = password_hash
         user.password_salt = password_salt
-        User.db_update(System, user)
+        user.db_update(System)
 
         return UserResponse(
             id=user._id,
@@ -704,7 +704,7 @@ async def api_set_user_roles(
 
         # Update user's roles
         user.roles = user_roles.roles
-        User.db_update(System, user)
+        user.db_update(System)
 
         return UserResponse(
             id=user._id,
@@ -731,7 +731,7 @@ async def api_delete_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        User.db_delete(System, user._id)
+        user.db_delete(System)
         return {"message": f"User '{username}' deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

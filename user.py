@@ -43,7 +43,7 @@ class User:
             "username": self.username,
             "password_hash": self.password_hash,
             "password_salt": self.password_salt,
-            "last_login": self.last_login.isoformat() if self.last_login else None,
+            "last_login": datetime_to_str(self.last_login),
             "roles": self.roles
         }
 
@@ -272,7 +272,7 @@ class User:
             username=data["username"],
             password_hash=data["password_hash"],
             password_salt=data["password_salt"],
-            last_login=data["last_login"],
+            last_login=datetime_from_str(data["last_login"]) if data["last_login"] else None,
             roles=[str(role) for role in data.get("roles", [])],
             _id=data["_id"]
         )
@@ -288,6 +288,13 @@ class User:
             salt = salt_bytes.decode()
         hashed = bcrypt.hashpw(password.encode(), salt.encode()).decode()
         return hashed, salt
+    
+    def verify_password(self, password: str) -> bool:
+        """
+        Verify if the provided password matches the stored hash.
+        """
+        hashed = bcrypt.hashpw(password.encode(), self.password_salt.encode()).decode()
+        return hashed == self.password_hash
 
 
 def main() -> None:
@@ -312,7 +319,7 @@ def main() -> None:
         db_connection=admin_db,
         username="testuser",
         password="password123",
-        roles=["admin"]
+        roles_id=["admin"]
     )
 
     # Retrieve the user by username
@@ -321,6 +328,7 @@ def main() -> None:
         print(f"Retrieved User: {retrieved_user}")
     else:
         print("User not found.")
+        return
 
     # Update the user
     retrieved_user.roles.append("editor")

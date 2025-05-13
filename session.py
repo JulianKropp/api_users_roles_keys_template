@@ -53,6 +53,11 @@ class Session:
         # Convert string dates back to datetime objects.
         creation_date = datetime_from_str(data.get("creation_date"))
         expiration_date = datetime_from_str(data.get("expiration_date"))
+
+        if creation_date is None:
+            raise ValueError("creation_date is required")
+        if expiration_date is None:
+            raise ValueError("expiration_date is required")
         
         return cls(
             user_id=data["user_id"],
@@ -165,19 +170,20 @@ async def test_session_manager() -> None:
             db_connection=db_connection,
             username=MONGODB_ADMIN_USER,
             password=MONGODB_ADMIN_PASSWORD,
-            roles=["admin"]
+            roles_id=["admin"]
         )
 
     # Log in to create a session.
-    session = await session_manager.login(db_connection, MONGODB_ADMIN_USER, MONGODB_ADMIN_PASSWORD)
-    print(f"Created session: {session._id}, Status: {await session.status}, user_id: {session.user_id}, roles: {session.user_roles}")
+    session_user = await session_manager.login(db_connection, MONGODB_ADMIN_USER, MONGODB_ADMIN_PASSWORD)
+    session, user = session_user
+    print(f"Created session: {session._id}, user_id: {session.user_id}, roles: {user.roles}")
 
     sessions = await session_manager.get_sessions()
     print("Active sessions:", list(sessions.keys()))
 
     # Log out of the session.
     await session.logout()
-    print(f"Session {session._id} status after logout: {await session.status}")
+    print(f"Session {session._id}")
 
     # Check that the session is removed from Redis.
     sessions = await session_manager.get_sessions()
