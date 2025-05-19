@@ -1081,6 +1081,7 @@ def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req
             raise HTTPException(status_code=403, detail="You do not have permission to create this api key with this roles. The roles you assigned are broader than your current roles.")
 
     new_key = APIKey.new(
+        user_id=user_id,
         db_connection=System,
         expiration=req.expiration,
         roles=req.roles,
