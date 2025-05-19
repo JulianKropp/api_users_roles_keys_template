@@ -267,9 +267,6 @@ def get_user_roles_by_session(session: Union[SessionUser, SessionAPIKey]) -> Lis
             roles_api.append(role_obj)
         
         return roles_api
-    else:
-        logger.error(f"get_user_roles_by_session: Session is not of type SessionUser or SessionAPIKey: {session.__class__.__name__}")
-        raise HTTPException(status_code=403, detail="Invalid authentication token")
 
 def get_user_or_apikey_from_session(session: Union[SessionUser, SessionAPIKey]) -> Union[User, APIKey]:
     
@@ -291,9 +288,6 @@ def get_user_or_apikey_from_session(session: Union[SessionUser, SessionAPIKey]) 
             logger.error(f"APIKey {api_key_id} not found for token: {session._id}")
             raise HTTPException(status_code=403, detail="Invalid authentication token")
         return api_key
-    else:
-        logger.error(f"Session not found for user/api token: {session._id}")
-        raise HTTPException(status_code=403, detail="Invalid authentication token")
 
 # get session from token
 def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Request, HTTPAuthorizationCredentials], Awaitable[Union[SessionUser, SessionAPIKey]]]:
@@ -498,9 +492,6 @@ async def api_auth_status(session: Union[SessionUser, SessionAPIKey]= Depends(no
                 expiration=user_or_apikey.expiration
             )
         )
-    else:
-        logger.info(f"Session not found for token: {session._id}")
-        raise HTTPException(status_code=403, detail="Invalid authentication token")
 
 # Logout model
 class OK(BaseModel):
@@ -562,8 +553,6 @@ async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey]= Depends(
                     expiration=user_or_apikey.expiration
                 )
             ))
-        else:
-            continue
 
     return AuthSessionResponse(sessions=return_sessions)
 
