@@ -303,8 +303,13 @@ class SessionManager:
             session_id=session.id,
             webrtc_id=webrtc_session.id
         )
+
+        calculate_expiration = (
+            session.expiration_date - datetime.now()
+        ).total_seconds()
+
         async with self.lock:
-            await self.redis.set(key, webrtc_session.to_json(), ex=SESSION_DURATION_SECONDS)
+            await self.redis.set(key, webrtc_session.to_json(), ex=calculate_expiration)
         return webrtc_session
 
     # -- Private utilities -------------------------------------------------- #
