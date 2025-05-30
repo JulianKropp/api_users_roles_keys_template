@@ -88,13 +88,13 @@ def mongodb_permissions(collection: str, actions: List[MongoDBPermissions], role
         def wrapper(cls: type, db_connection: "MongoDBConnection", *args: Tuple, **kwargs: Dict) -> Optional[Union[Dict, List]]:
             # Check permissions before executing the function
             if db_connection.admin:
-                return func(cls, db_connection, *args, **kwargs)
+                return func(cls, db_connection, *args, **kwargs) # type: ignore
 
             # get new permissions from db
             db_connection.get_user_roles()
             if any(role in db_connection.roles for role in roles):
                 # we have permissions
-                return func(cls, db_connection, *args, **kwargs)
+                return func(cls, db_connection, *args, **kwargs) # type: ignore
             else:
                 # no permissions
                 raise PermissionError(f"User does not have permission to execute {func.__name__}")

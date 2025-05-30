@@ -11,13 +11,9 @@ from db_connection import MongoDBConnection
 
 
 def datetime_to_str(dt: Optional[datetime]) -> Optional[str]:
-    if isinstance(dt, str):
-        return dt
     return dt.isoformat() if dt else None
 
 def datetime_from_str(dt_str: Optional[str]) -> Optional[datetime]:
-    if isinstance(dt_str, datetime):
-        return dt_str
     return datetime.fromisoformat(dt_str) if dt_str else None
 
 # Define a module-level constant for the collection name.
@@ -29,6 +25,7 @@ class APIKey:
     Represents an API key with its associated metadata.
     """
     created_at: datetime
+    user_id: str
     key: str = field(default_factory=lambda: f"key-{uuid.uuid4()}")
     expiration: Optional[datetime] = None
     roles: List[str] = field(default_factory=list)
@@ -41,17 +38,13 @@ class APIKey:
     def id(self) -> str:
         return self._id
 
-    def __post_init__(self):
-        # Convert string dates to datetime objects if they are not None.
-        self.created_at = datetime_from_str(self.created_at)
-        self.expiration = datetime_from_str(self.expiration)
-
     def to_dict(self) -> dict:
         """
         Converts the APIKey instance to a dictionary.
         """
         return{
                 "key": self.key,
+                "user_id": self.user_id,
                 "created_at": datetime_to_str(self.created_at),
                 "expiration": datetime_to_str(self.expiration),
                 "roles": self.roles,
@@ -66,6 +59,7 @@ class APIKey:
         create_date = datetime_from_str(data["created_at"])
         return cls(
             key=data["key"],
+            user_id=data["user_id"],
             created_at=create_date if create_date is not None else datetime.now(),
             expiration=datetime_from_str(data["expiration"]),
             roles=data.get("roles", []),
@@ -78,6 +72,7 @@ class APIKey:
         """
         return json.dumps({
             "key": self.key,
+            "user_id": self.user_id,
             "created_at": datetime_to_str(self.created_at),
             "expiration": datetime_to_str(self.expiration),
             "roles": self.roles,
@@ -104,9 +99,13 @@ class APIKey:
             "validator": {
                 "$jsonSchema": {
                     "bsonType": "object",
-                    "required": ["_id", "key", "created_at", "expiration"],
+                    "required": ["_id", "key", "user_id", "created_at", "expiration", "roles"],
                     "properties": {
                         "_id": {
+                            "bsonType": "string",
+                            "description": "must be a string and is required"
+                        },
+                        "user_id": {
                             "bsonType": "string",
                             "description": "must be a string and is required"
                         },
@@ -154,11 +153,12 @@ class APIKey:
         db_connection.db.drop_collection(cls.COLLECTION_NAME)
 
     @classmethod
-    def new(cls, db_connection: MongoDBConnection, expiration: Optional[datetime] = None, roles: Optional[List[str]] = None) -> "APIKey":
+    def new(cls, db_connection: MongoDBConnection, user_id: str, expiration: Optional[datetime] = None, roles: Optional[List[str]] = None) -> "APIKey":
         """
         Creates a new APIKey instance and saves it to the database.
         """
         api_key = cls(
+            user_id=user_id,
             created_at=datetime.now(),
             expiration=expiration,
             roles=roles if roles else [],
@@ -204,6 +204,7 @@ class APIKey:
         if data:
             create_date = datetime_from_str(data["created_at"])
             self.key = data["key"]
+            self.user_id = data["user_id"]
             self.created_at = create_date if create_date is not None else datetime.now()
             self.expiration = datetime_from_str(data["expiration"])
             self.roles = data.get("roles", [])

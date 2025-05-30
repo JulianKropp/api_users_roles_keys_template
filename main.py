@@ -22,12 +22,14 @@ from pydantic import BaseModel
 import redis.asyncio as redis
 from starlette.datastructures import Headers
 import uvicorn
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 
 from api_key import APIKey
 from db_connection import MongoDBConnection
 from role import Endpoint, Role, Method
 from user import User
-from session import SessionAPIKey, SessionUser, SessionManager
+from session import SessionWebRTC, SessionAPIKey, SessionUser, SessionManager
+from webrtc import AudioPeerManager, AudioPeer, ErrorResponse, OfferRequest, OfferResponse, OggOpusRecorder, PeerIDRequest, StatusResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,6 +52,16 @@ System: MongoDBConnection = MongoDBConnection(
                 db_name="transcription_service",
                 admin=True
             )
+
+WEBRTC_TIMEOUT: int = int(os.getenv("WEBRTC_TIMEOUT", 5))  # Timeout for WebRTC connections in seconds
+
+# API Rate Limiters
+LVL0_RATE_LIMITER = RateLimiter(times=6000, minutes=1)
+LVL1_RATE_LIMITER = RateLimiter(times=600, minutes=1)
+LVL2_RATE_LIMITER = RateLimiter(times=60, minutes=1)
+LVL3_RATE_LIMITER = RateLimiter(times=6, minutes=1)
+
+APM = AudioPeerManager(WEBRTC_TIMEOUT)
 
 # ---------------------------
 # Setup db
@@ -146,6 +158,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         identifier=service_name_identifier,
         http_callback=rate_limit_exceeded_callback,
         )
+    
+    # Check for timeouts for WebRTC connections
+    asyncio.create_task(APM.check_timeouts())
+
     try:
         yield
     finally:
@@ -267,9 +283,6 @@ def get_user_roles_by_session(session: Union[SessionUser, SessionAPIKey]) -> Lis
             roles_api.append(role_obj)
         
         return roles_api
-    else:
-        logger.error(f"get_user_roles_by_session: Session is not of type SessionUser or SessionAPIKey: {session.__class__.__name__}")
-        raise HTTPException(status_code=403, detail="Invalid authentication token")
 
 def get_user_or_apikey_from_session(session: Union[SessionUser, SessionAPIKey]) -> Union[User, APIKey]:
     
@@ -291,9 +304,6 @@ def get_user_or_apikey_from_session(session: Union[SessionUser, SessionAPIKey]) 
             logger.error(f"APIKey {api_key_id} not found for token: {session._id}")
             raise HTTPException(status_code=403, detail="Invalid authentication token")
         return api_key
-    else:
-        logger.error(f"Session not found for user/api token: {session._id}")
-        raise HTTPException(status_code=403, detail="Invalid authentication token")
 
 # get session from token
 def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Request, HTTPAuthorizationCredentials], Awaitable[Union[SessionUser, SessionAPIKey]]]:
@@ -406,7 +416,7 @@ class AuthAPIKeyResponse(BaseModel):
 @app.post(
     "/api/v1/auth/token",
     response_model=Union[AuthUserResponse, AuthAPIKeyResponse],
-    dependencies=[Depends(RateLimiter(times=5, minutes=1))],
+    dependencies=[Depends(LVL3_RATE_LIMITER)],
     description="Authenticate a user with a username and password. Creates a new session token and returns detailed session information."
 )
 async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKeyResponse]:
@@ -464,7 +474,7 @@ async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKe
 @app.get(
     "/api/v1/auth/status",
     response_model=Union[AuthUserResponse, AuthAPIKeyResponse],
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Return the current authentication sessions details, including token and user information."
 )
 async def api_auth_status(session: Union[SessionUser, SessionAPIKey]= Depends(no_auth())) -> Union[AuthUserResponse, AuthAPIKeyResponse]:
@@ -498,9 +508,6 @@ async def api_auth_status(session: Union[SessionUser, SessionAPIKey]= Depends(no
                 expiration=user_or_apikey.expiration
             )
         )
-    else:
-        logger.info(f"Session not found for token: {session._id}")
-        raise HTTPException(status_code=403, detail="Invalid authentication token")
 
 # Logout model
 class OK(BaseModel):
@@ -509,7 +516,7 @@ class OK(BaseModel):
 @app.get(
     "/api/v1/auth/logout",
     response_model=OK,
-    dependencies=[Depends(RateLimiter(times=5, minutes=1))],
+    dependencies=[Depends(LVL3_RATE_LIMITER)],
     description="Logout the current user session, invalidating the session token."
 )
 async def api_auth_logout(session: Union[SessionUser, SessionAPIKey]= Depends(no_auth())) -> OK:
@@ -523,7 +530,7 @@ class AuthSessionResponse(BaseModel):
 @app.get(
     "/api/v1/auth/sessions",
     response_model=AuthSessionResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="For administrative users: Retrieve a list of all active sessions with detailed session information."
 )
 async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> AuthSessionResponse:
@@ -562,8 +569,6 @@ async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey]= Depends(
                     expiration=user_or_apikey.expiration
                 )
             ))
-        else:
-            continue
 
     return AuthSessionResponse(sessions=return_sessions)
 
@@ -571,7 +576,7 @@ async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey]= Depends(
 @app.get(
     "/api/v1/auth/session/logout/{token}",
     response_model=OK,
-    dependencies=[Depends(RateLimiter(times=5, minutes=1))],
+    dependencies=[Depends(LVL3_RATE_LIMITER)],
     description="For administrators only: Logout a specific session identified by its token."
 )
 async def api_auth_session_logout(token: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> OK:
@@ -614,7 +619,7 @@ class RolePutRequest(BaseModel):
 @app.get(
     "/api/v1/roles",
     response_model=List[RoleResponse],
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all roles in the system."
 )
 async def api_roles(session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> List[RoleResponse]:
@@ -632,7 +637,7 @@ async def api_roles(session: Union[SessionUser, SessionAPIKey]= Depends(auth([BO
 @app.get(
     "/api/v1/role/{role_id}",
     response_model=RoleResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Get a specific role by its ID."
 )
 async def api_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> RoleResponse:
@@ -650,7 +655,7 @@ async def api_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Dep
 @app.post(
     "/api/v1/role",
     response_model=RoleResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new role with specified endpoints."
 )
 async def api_create_role(role: RoleCreateRequest, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> RoleResponse:
@@ -693,7 +698,7 @@ async def api_create_role(role: RoleCreateRequest, session: Union[SessionUser, S
 @app.delete(
     "/api/v1/role/{role_id}",
     response_model=OK,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Delete a specific role by its ID."
 )
 async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> OK:
@@ -726,7 +731,7 @@ async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKe
 @app.put(
     "/api/v1/role/{role_id}",
     response_model=RoleResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Update a specific role by its ID."
 )
 async def api_update_role(role_id: str, role: RolePutRequest, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> RoleResponse:
@@ -765,7 +770,7 @@ class UserResponse(BaseModel):
 @app.get(
     "/api/v1/users",
     response_model=List[UserResponse],
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all users in the system."
 )
 async def api_users(session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> List[UserResponse]:
@@ -790,7 +795,7 @@ class UserCreate(BaseModel):
 @app.post(
     "/api/v1/user",
     response_model=UserResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new user in the system."
 )
 async def api_create_user(
@@ -843,7 +848,7 @@ class UserUpdatePassword(BaseModel):
 @app.put(
     "/api/v1/user/password/change",
     response_model=UserResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Change the user password."
 )
 async def api_change_user_password(
@@ -888,7 +893,7 @@ class UserResetPassword(BaseModel):
 @app.put(
     "/api/v1/user/{user_id}/password/reset",
     response_model=UserResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Reset the user password."
 )
 async def api_reset_user_password(
@@ -925,7 +930,7 @@ class UserSetRole(BaseModel):
 @app.put(
     "/api/v1/user/{user_id}/roles",
     response_model=UserResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Set roles for a user. Requires admin privileges."
 )
 async def api_set_user_roles(
@@ -961,7 +966,7 @@ async def api_set_user_roles(
 @app.delete(
     "/api/v1/user/{user_id}",
     response_model=OK,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Delete a user. Requires admin privileges."
 )
 async def api_delete_user(
@@ -1081,6 +1086,7 @@ def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req
             raise HTTPException(status_code=403, detail="You do not have permission to create this api key with this roles. The roles you assigned are broader than your current roles.")
 
     new_key = APIKey.new(
+        user_id=user_id,
         db_connection=System,
         expiration=req.expiration,
         roles=req.roles,
@@ -1174,7 +1180,7 @@ def _update_apikey(
 @app.get(
     "/api/v1/user/{user_id}/apikeys",
     response_model=List[APIKeyResponse],
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all API keys for a specific user.",
 )
 async def api_list_apikeys(
@@ -1186,7 +1192,7 @@ async def api_list_apikeys(
 @app.get(
     "/api/v1/user/apikeys",
     response_model=List[APIKeyResponse],
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all API keys for the authenticated user.",
 )
 async def api_list_own_apikeys(
@@ -1202,7 +1208,7 @@ async def api_list_own_apikeys(
 @app.get(
     "/api/v1/user/{user_id}/apikey/{apikey_id}",
     response_model=APIKeyResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Get a specific API key for a user.",
 )
 async def api_get_apikey(
@@ -1214,7 +1220,7 @@ async def api_get_apikey(
 @app.get(
     "/api/v1/user/apikey/{apikey_id}",
     response_model=APIKeyResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Get one of *your* API keys (user_id from session).",
 )
 async def api_get_own_apikey(
@@ -1230,7 +1236,7 @@ async def api_get_own_apikey(
 @app.post(
     "/api/v1/user/{user_id}/apikey",
     response_model=APIKeyResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new API key for a specific user.",
 )
 async def api_create_apikey(
@@ -1244,7 +1250,7 @@ async def api_create_apikey(
 @app.post(
     "/api/v1/user/apikey",
     response_model=APIKeyResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new API key for the authenticated user.",
 )
 async def api_create_own_apikey(
@@ -1260,7 +1266,7 @@ async def api_create_own_apikey(
 @app.delete(
     "/api/v1/user/{user_id}/apikey/{apikey_id}",
     response_model=OK,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Delete a specific API key for a user.",
 )
 async def api_delete_apikey(
@@ -1272,7 +1278,7 @@ async def api_delete_apikey(
 @app.delete(
     "/api/v1/user/apikey/{apikey_id}",
     response_model=OK,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Delete one of *your* API keys.",
 )
 async def api_delete_own_apikey(
@@ -1288,7 +1294,7 @@ async def api_delete_own_apikey(
 @app.put(
     "/api/v1/user/{user_id}/apikey/{apikey_id}",
     response_model=APIKeyResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Update a specific API key.",
 )
 async def api_update_apikey(
@@ -1303,7 +1309,7 @@ async def api_update_apikey(
 @app.put(
     "/api/v1/user/apikey/{apikey_id}",
     response_model=APIKeyResponse,
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Update one of *your* API keys.",
 )
 async def api_update_own_apikey(
@@ -1329,7 +1335,7 @@ class APIendpointResponse(BaseModel):
 @app.get(
     "/api/v1/endpoints",
     response_model=List[APIendpointResponse],
-    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all available API endpoints."
 )
 def list_endpoints() -> List[APIendpointResponse]:
@@ -1351,6 +1357,125 @@ def list_endpoints() -> List[APIendpointResponse]:
 
 
 # ---------------------------
+# WebRTC
+# ---------------------------
+@app.post(
+        "/api/v1/webrtc/offer",
+        response_model=OfferResponse,
+        responses={400: {"model": ErrorResponse}},
+        dependencies=[Depends(LVL2_RATE_LIMITER)],
+        description="Handle WebRTC offer and return an answer."
+        )
+async def offer(
+    request_data: OfferRequest,
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    ) -> OfferResponse:
+    offer = RTCSessionDescription(
+        sdp=request_data.sdp,
+        type=request_data.type
+    )
+
+    webrtc_peer = await SM.login_webrtc(session)
+    peer_id = webrtc_peer.id
+
+    pc = RTCPeerConnection()
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange() -> None:
+        logger.info(f"Connection state for peer {peer_id} is {pc.connectionState}")
+        if pc.connectionState in ["failed", "closed"]:
+            try:
+                await APM.remove_peer(peer_id)
+            except Exception as e:
+                logger.error(f"Error cleaning up peer {peer_id}: {e}")
+
+    async def on_close(webrtc_peer_id: str) -> None:
+        logger.info(f"Peer {webrtc_peer_id} connection closed")
+        try:
+            await SM.logout(webrtc_peer_id)
+        except Exception as e:
+            logger.error(f"Error logging out peer {webrtc_peer_id}: {e}")
+
+    @pc.on("track")
+    def on_track(track: MediaStreamTrack) -> None:
+        logger.info(f"Received {track.kind} track for peer {peer_id}")
+        if track.kind == "audio":
+            peer_obj = AudioPeer(pc=pc, track=track, user_id=session.id, session_id=session.id, peer_id=peer_id, converter=OggOpusRecorder(file_name=peer_id), on_close=on_close)
+            APM.add_peer(peer_obj)
+
+    await pc.setRemoteDescription(offer)
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+
+    return OfferResponse(
+        sdp=pc.localDescription.sdp,
+        type=pc.localDescription.type,
+        peer_id=peer_id
+    )
+
+@app.post(
+    "/api/v1/webrtc/{peer_id}/start_recording",
+    response_model=StatusResponse,
+    responses={400: {"model": ErrorResponse}},
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
+    description="Start recording for a specific peer."
+)
+async def start_recording(
+    peer_id: str,
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    ) -> StatusResponse:
+    ap = await APM.get_peer(peer_id)
+    if not peer_id or ap is None:
+        raise HTTPException(status_code=400, detail="Invalid peer ID")
+
+    try:
+        await ap.start_recording()
+        return StatusResponse(status="Recording started")
+    except Exception as e:
+        logger.error(f"Error starting recording: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete(
+    "/api/v1/webrtc/{peer_id}/stop_recording",
+    response_model=StatusResponse,
+    responses={400: {"model": ErrorResponse}},
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
+    description="Stop recording for a specific peer."
+)
+async def stop_recording(
+    peer_id: str,
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    ) -> StatusResponse:
+    ap = await APM.get_peer(peer_id)
+    if not peer_id or ap is None:
+        raise HTTPException(status_code=400, detail="Invalid peer ID")
+
+    try:
+        await ap.stop_recording()
+        return StatusResponse(status="Recording stopped")
+    except Exception as e:
+        logger.error(f"Error stopping recording: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------
 # Webpage
 # ---------------------------
 app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
@@ -1362,7 +1487,7 @@ app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets
     description="Catch-all route that serves the React application's index.html for any unspecified path."
 )
 async def serve_react_app(full_path: str) -> FileResponse:
-    index_path = os.path.join("frontend/dist", "index.html")
+    index_path = os.path.join("static-webrtc", "index.html")
     return FileResponse(index_path)
 
 
