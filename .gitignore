@@ -1,3 +1,4 @@
+*.ogg
 data
 data/*
 .env
