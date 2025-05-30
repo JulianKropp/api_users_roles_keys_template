@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>FastAPI WebSocket Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; }
+    #log { border: 1px solid #ddd; padding: .5rem; height: 16rem; overflow-y: auto; }
+    #msg { width: 70%; }
+  </style>
+</head>
+<body>
+  <h1>FastAPI WebSocket Demo</h1>
+
+  <div id="log"></div>
+  <br />
+  <input id="msg" type="text" placeholder="Type a message" autocomplete="off" />
+  <button id="send">Send</button>
+
+  <script>
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    const logEl = document.getElementById("log");
+    const msgInput = document.getElementById("msg");
+    const sendBtn = document.getElementById("send");
+
+    function log(message) {
+      const line = document.createElement("div");
+      line.textContent = message;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight; // auto-scroll
+    }
+
+    ws.onopen = () => log("✅ WebSocket opened");
+    ws.onmessage = (event) => log("⬅️  " + event.data);
+    ws.onclose = () => log("❌ WebSocket closed");
+
+    sendBtn.onclick = () => {
+      const text = msgInput.value.trim();
+      if (!text) return;
+      log("➡️  " + text);
+      ws.send(text);          // ← send to server
+      msgInput.value = "";
+    };
+
+    // Convenience: send on Enter
+    msgInput.onkeydown = (e) => {
+      if (e.key === "Enter") sendBtn.onclick();
+    };
+  </script>
+</body>
+</html>
