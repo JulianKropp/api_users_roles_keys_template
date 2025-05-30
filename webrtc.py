@@ -25,6 +25,8 @@ from collections import deque
 import opuslib # type: ignore
 from pydantic import BaseModel
 
+from session import SessionManager
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -493,12 +495,20 @@ class AudioPeerManager:
             current_time = time.time()
             peers_to_cleanup: Set[str] = set()  # Track peers that need cleanup
             
+            SM = SessionManager()
+
             for peer_id, audio_stream_track in list(self.audio_peers.items()):
                 last_time = audio_stream_track.last_frame_time
                 if current_time - last_time > self.timeout:
                     logger.info(f"Timeout detected for peer {peer_id} after {self.timeout} seconds of inactivity")
                     peers_to_cleanup.add(peer_id)
             
+                # check each peer_id if it has a redis entry. If not add it to the cleanup list
+                if not await SM.exists(peer_id):
+                    logger.info(f"Peer {peer_id} has no active session in Redis, cleaning up")
+                    peers_to_cleanup.add(peer_id)
+            
+
             # Clean up peers outside the loop to avoid modifying the dictionary while iterating
             for peer_id in peers_to_cleanup:
                 try:
