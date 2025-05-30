@@ -86,10 +86,40 @@
         let stream = null;
         let isRecording = false;
         let peerId = null;
+        let bearerToken = "";
 
         const startButton = document.getElementById('startButton');
         const stopButton = document.getElementById('stopButton');
         const statusDiv = document.getElementById('status');
+
+        // Authenticate and get token
+        async function authenticate() {
+            try {
+                const response = await fetch('/api/v1/auth/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        type: "user",
+                        username: "boss",
+                        password: "boss"
+                    })
+                });
+                if (!response.ok) {
+                    throw new Error('Authentication failed');
+                }
+                const data = await response.json();
+                // Extract and set the bearer token from the response
+                bearerToken = data.token;
+                console.log("Authenticated successfully, token:", bearerToken);
+            } catch (e) {
+                console.error(e);
+                alert('Error during authentication: ' + e.message);
+            }
+        }
+        // Immediately authenticate when the script loads
+        authenticate();
 
         async function start() {
             try {
@@ -127,7 +157,8 @@
                 const response = await fetch('/api/v1/webrtc/offer', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + bearerToken
                     },
                     body: JSON.stringify({
                         sdp: pc.localDescription.sdp,
@@ -143,7 +174,8 @@
                 const startResponse = await fetch('/api/v1/webrtc/start_recording', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + bearerToken
                     },
                     body: JSON.stringify({ peer_id: peerId })
                 });
@@ -176,7 +208,8 @@
                     const stopResponse = await fetch('/api/v1/webrtc/stop_recording', {
                         method: 'POST',
                         headers: {
-                            'Content-Type': 'application/json'
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + bearerToken
                         },
                         body: JSON.stringify({ peer_id: peerId })
                     });
@@ -212,4 +245,4 @@
         stopButton.onclick = stop;
     </script>
 </body>
-</html> 
+</html>
