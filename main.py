@@ -1414,17 +1414,16 @@ async def offer(
     )
 
 @app.post(
-    "/api/v1/webrtc/start_recording",
+    "/api/v1/webrtc/{peer_id}/start_recording",
     response_model=StatusResponse,
     responses={400: {"model": ErrorResponse}},
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Start recording for a specific peer."
 )
 async def start_recording(
-    data: PeerIDRequest,
+    peer_id: str,
     session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
     ) -> StatusResponse:
-    peer_id = data.peer_id
     ap = await APM.get_peer(peer_id)
     if not peer_id or ap is None:
         raise HTTPException(status_code=400, detail="Invalid peer ID")
@@ -1436,18 +1435,17 @@ async def start_recording(
         logger.error(f"Error starting recording: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post(
-    "/api/v1/webrtc/stop_recording",
+@app.delete(
+    "/api/v1/webrtc/{peer_id}/stop_recording",
     response_model=StatusResponse,
     responses={400: {"model": ErrorResponse}},
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Stop recording for a specific peer."
 )
 async def stop_recording(
-    data: PeerIDRequest,
+    peer_id: str,
     session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
     ) -> StatusResponse:
-    peer_id = data.peer_id
     ap = await APM.get_peer(peer_id)
     if not peer_id or ap is None:
         raise HTTPException(status_code=400, detail="Invalid peer ID")

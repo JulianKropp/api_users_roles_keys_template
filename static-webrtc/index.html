@@ -183,13 +183,12 @@
                 await pc.setRemoteDescription(answer);
 
                 // Start recording on the server
-                const startResponse = await fetch('/api/v1/webrtc/start_recording', {
+                const startResponse = await fetch('/api/v1/webrtc/' + peerId + '/start_recording', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': 'Bearer ' + bearerToken
-                    },
-                    body: JSON.stringify({ peer_id: peerId })
+                    }
                 });
 
                 if (!startResponse.ok) {
@@ -223,13 +222,12 @@
 
                 // Stop recording on the server
                 if (isRecording) {
-                    const stopResponse = await fetch('/api/v1/webrtc/stop_recording', {
-                        method: 'POST',
+                    const stopResponse = await fetch('/api/v1/webrtc/' + peerId + '/stop_recording', {
+                        method: 'DELETE',
                         headers: {
                             'Content-Type': 'application/json',
                             'Authorization': 'Bearer ' + bearerToken
-                        },
-                        body: JSON.stringify({ peer_id: peerId })
+                        }
                     });
 
                     if (!stopResponse.ok) {
