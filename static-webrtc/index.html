@@ -87,6 +87,7 @@
         let isRecording = false;
         let peerId = null;
         let bearerToken = "";
+        let connectionTimeout = null; // Global timeout variable
 
         const startButton = document.getElementById('startButton');
         const stopButton = document.getElementById('stopButton');
@@ -132,18 +133,29 @@
                 // Add connection state change handler
                 pc.onconnectionstatechange = () => {
                     console.log("Connection state:", pc.connectionState);
-                    if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+                    if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+                        stop();
+                    } else if (pc.connectionState === "connected") {
+                        if (connectionTimeout) {
+                            clearTimeout(connectionTimeout);
+                            connectionTimeout = null;
+                        }
+                    }
+                };
+
+                pc.oniceconnectionstatechange = () => {
+                    console.log("ICE connection state:", pc.iceConnectionState);
+                    if (["failed", "closed", "disconnected"].includes(pc.iceConnectionState)) {
                         stop();
                     }
                 };
 
-                // Add ice connection state change handler
-                pc.oniceconnectionstatechange = () => {
-                    console.log("ICE connection state:", pc.iceConnectionState);
-                    if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") {
+                // Set a timeout to handle cases where the connection is not established within 5 seconds
+                connectionTimeout = setTimeout(() => {
+                    if (pc && pc.connectionState !== "connected") {
                         stop();
                     }
-                };
+                }, 5000);
 
                 // Add audio track to peer connection
                 stream.getTracks().forEach(track => {
@@ -199,6 +211,12 @@
 
         async function stop() {
             try {
+                // Clear the connection timeout if set
+                if (connectionTimeout) {
+                    clearTimeout(connectionTimeout);
+                    connectionTimeout = null;
+                }
+
                 if (!peerId) {
                     return;  // No active session
                 }
