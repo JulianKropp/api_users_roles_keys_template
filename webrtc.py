@@ -453,7 +453,7 @@ class AudioPeer(MediaStreamTrack):
 
         # call on_close
         if self.on_close:
-            self.on_close(self.peer_id)
+            await self.on_close(self.peer_id)
 
         logger.info(f"Stopped recording (callback mode) for peer {self.peer_id}")
 
