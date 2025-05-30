@@ -22,12 +22,14 @@ from pydantic import BaseModel
 import redis.asyncio as redis
 from starlette.datastructures import Headers
 import uvicorn
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 
 from api_key import APIKey
 from db_connection import MongoDBConnection
 from role import Endpoint, Role, Method
 from user import User
-from session import SessionAPIKey, SessionUser, SessionManager
+from session import SessionWebRTC, SessionAPIKey, SessionUser, SessionManager
+from webrtc import AudioPeerManager, AudioPeer, ErrorResponse, OfferRequest, OfferResponse, OggOpusRecorder, PeerIDRequest, StatusResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,6 +52,10 @@ System: MongoDBConnection = MongoDBConnection(
                 db_name="transcription_service",
                 admin=True
             )
+
+WEBRTC_TIMEOUT: int = int(os.getenv("WEBRTC_TIMEOUT", 5))  # Timeout for WebRTC connections in seconds
+
+APM = AudioPeerManager(WEBRTC_TIMEOUT)
 
 # ---------------------------
 # Setup db
@@ -146,6 +152,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         identifier=service_name_identifier,
         http_callback=rate_limit_exceeded_callback,
         )
+    
+    # Check for timeouts for WebRTC connections
+    asyncio.create_task(APM.check_timeouts())
+
     try:
         yield
     finally:
@@ -1341,6 +1351,127 @@ def list_endpoints() -> List[APIendpointResponse]:
 
 
 # ---------------------------
+# WebRTC
+# ---------------------------
+@app.post(
+        "/api/v1/webrtc/offer",
+        response_model=OfferResponse,
+        responses={400: {"model": ErrorResponse}},
+        dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+        description="Handle WebRTC offer and return an answer."
+        )
+async def offer(
+    request_data: OfferRequest,
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    ) -> OfferResponse:
+    offer = RTCSessionDescription(
+        sdp=request_data.sdp,
+        type=request_data.type
+    )
+
+    webrtc_peer = await SM.login_webrtc(session)
+    peer_id = webrtc_peer.id
+
+    pc = RTCPeerConnection()
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange() -> None:
+        logger.info(f"Connection state for peer {peer_id} is {pc.connectionState}")
+        if pc.connectionState in ["failed", "closed"]:
+            try:
+                await APM.remove_peer(peer_id)
+            except Exception as e:
+                logger.error(f"Error cleaning up peer {peer_id}: {e}")
+
+    async def on_close(webrtc_peer_id: str) -> None:
+        logger.info(f"Peer {webrtc_peer_id} connection closed")
+        try:
+            await SM.logout(webrtc_peer_id)
+        except Exception as e:
+            logger.error(f"Error logging out peer {webrtc_peer_id}: {e}")
+
+    @pc.on("track")
+    def on_track(track: MediaStreamTrack) -> None:
+        logger.info(f"Received {track.kind} track for peer {peer_id}")
+        if track.kind == "audio":
+            peer_obj = AudioPeer(pc=pc, track=track, user_id=session.id, session_id=session.id, peer_id=peer_id, converter=OggOpusRecorder(file_name=peer_id), on_close=on_close)
+            APM.add_peer(peer_obj)
+
+    await pc.setRemoteDescription(offer)
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+
+    return OfferResponse(
+        sdp=pc.localDescription.sdp,
+        type=pc.localDescription.type,
+        peer_id=peer_id
+    )
+
+@app.post(
+    "/api/v1/webrtc/start_recording",
+    response_model=StatusResponse,
+    responses={400: {"model": ErrorResponse}},
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Start recording for a specific peer."
+)
+async def start_recording(
+    data: PeerIDRequest,
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    ) -> StatusResponse:
+    peer_id = data.peer_id
+    ap = await APM.get_peer(peer_id)
+    if not peer_id or ap is None:
+        raise HTTPException(status_code=400, detail="Invalid peer ID")
+
+    try:
+        await ap.start_recording()
+        return StatusResponse(status="Recording started")
+    except Exception as e:
+        logger.error(f"Error starting recording: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(
+    "/api/v1/webrtc/stop_recording",
+    response_model=StatusResponse,
+    responses={400: {"model": ErrorResponse}},
+    dependencies=[Depends(RateLimiter(times=1, seconds=1))],
+    description="Stop recording for a specific peer."
+)
+async def stop_recording(
+    data: PeerIDRequest,
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    ) -> StatusResponse:
+    peer_id = data.peer_id
+    ap = await APM.get_peer(peer_id)
+    if not peer_id or ap is None:
+        raise HTTPException(status_code=400, detail="Invalid peer ID")
+
+    try:
+        await ap.stop_recording()
+        return StatusResponse(status="Recording stopped")
+    except Exception as e:
+        logger.error(f"Error stopping recording: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ---------------------------
 # Webpage
 # ---------------------------
 app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
@@ -1352,7 +1483,7 @@ app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets
     description="Catch-all route that serves the React application's index.html for any unspecified path."
 )
 async def serve_react_app(full_path: str) -> FileResponse:
-    index_path = os.path.join("frontend/dist", "index.html")
+    index_path = os.path.join("static-webrtc", "index.html")
     return FileResponse(index_path)
 
 

@@ -1,7 +1,7 @@
 fastapi[all]
 types-ujson
 types-requests
-uvicorn
+uvicorn[standard]
 pydantic
 redis
 pymongo
@@ -15,3 +15,7 @@ fastapi
 mongomock
 httpx
 types-redis
+aiortc
+numpy
+mypy
+opuslib
