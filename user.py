@@ -24,6 +24,8 @@ class User:
     username: str
     password_hash: str
     password_salt: str
+    created_by: str = "system" # "system", "ldap", "oidc", "saml", etc.
+    disabled: bool = False
     last_login: Optional[datetime] = None
     roles: List[str] = field(default_factory=list)
     api_keys_ids: List[str] = field(default_factory=list)
@@ -43,6 +45,8 @@ class User:
             "username": self.username,
             "password_hash": self.password_hash,
             "password_salt": self.password_salt,
+            "created_by": self.created_by,
+            "disabled": self.disabled,
             "last_login": datetime_to_str(self.last_login),
             "roles": self.roles,
             "api_keys_ids": self.api_keys_ids  # Added api_keys_ids field
@@ -58,6 +62,8 @@ class User:
             username=data["username"],
             password_hash=data["password_hash"],
             password_salt=data["password_salt"],
+            created_by=data["created_by"],
+            disabled=data["disabled"],
             last_login=last_login,
             roles=data.get("roles", []),
             api_keys_ids=data.get("api_keys_ids", []),  # Added api_keys_ids field
@@ -71,6 +77,8 @@ class User:
             "username": self.username,
             "password_hash": self.password_hash,
             "password_salt": self.password_salt,
+            "created_by": self.created_by,
+            "disabled": self.disabled,
             "last_login": datetime_to_str(self.last_login),
             "roles": self.roles,
             "api_keys_ids": self.api_keys_ids  # Added api_keys_ids field
@@ -96,7 +104,7 @@ class User:
             "validator": {
                 "$jsonSchema": {
                     "bsonType": "object",
-                    "required": ["_id", "username", "password_hash", "password_salt", "last_login"],
+                    "required": ["_id", "username", "password_hash", "password_salt", "created_by", "disabled", "last_login"],
                     "properties": {
                         "_id": {
                             "bsonType": "string",
@@ -110,9 +118,17 @@ class User:
                             "bsonType": "string",
                             "description": "must be a string and is required"
                         },
+                        "created_by": {
+                            "bsonType": "string",
+                            "description": "must be a string and is optional, default is 'system'"
+                        },
                         "password_salt": {
                             "bsonType": "string",
                             "description": "must be a string and is required"
+                        },
+                        "disabled": {
+                            "bsonType": "bool",
+                            "description": "must be a boolean and is optional, default is false"
                         },
                         "last_login": {
                             "bsonType": ["string", "null"],
@@ -157,7 +173,7 @@ class User:
         db_connection.db.drop_collection(cls.COLLECTION_NAME)
 
     @classmethod
-    def new(cls, db_connection: MongoDBConnection, username: str, password: str, roles_id: Optional[List[str]] = None) -> "User":
+    def new(cls, db_connection: MongoDBConnection, username: str, password: str, roles_id: Optional[List[str]] = None, created_by: str = "system") -> 'User':
         """
         Create a new user in the database.
         """
@@ -184,7 +200,8 @@ class User:
             username=username,
             password_hash=password_hash,
             password_salt=password_salt,
-            roles=roles_id
+            roles=roles_id,
+            created_by=created_by,
         )
 
         # Save the new user to the database
@@ -240,6 +257,8 @@ class User:
             self.username = refreshed_user.username
             self.password_hash = refreshed_user.password_hash
             self.password_salt = refreshed_user.password_salt
+            self.created_by = refreshed_user.created_by
+            self.disabled = refreshed_user.disabled
             self.last_login = refreshed_user.last_login
             self.roles = refreshed_user.roles
             self.api_keys_ids = refreshed_user.api_keys_ids
@@ -281,6 +300,8 @@ class User:
             username=data["username"],
             password_hash=data["password_hash"],
             password_salt=data["password_salt"],
+            created_by=data["created_by"],
+            disabled=data["disabled"],
             last_login=datetime_from_str(data["last_login"]) if data["last_login"] else None,
             roles=[str(role) for role in data.get("roles", [])],
             api_keys_ids=data.get("api_keys_ids", []),  # Added api_keys_ids field
