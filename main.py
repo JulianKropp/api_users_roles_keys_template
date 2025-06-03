@@ -49,7 +49,7 @@ System: MongoDBConnection = MongoDBConnection(
                 mongo_uri=os.getenv("MONGO_URI", "localhost:27017"),
                 user=os.getenv("MONGO_USER", "admin"),
                 password=os.getenv("MONGO_PASSWORD", "admin"),
-                db_name="transcription_service",
+                db_name="user_management",
                 admin=True
             )
 
@@ -170,8 +170,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     lifespan=lifespan,
-    title="Transcription Service",
-    description="A service for transcribing live audio streams.",
+    title="User Management API",
+    description="An API for managing users, roles, and authentication sessions.",
     version="1.0",
 )
 
