@@ -3,6 +3,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
 import uuid
 import json
@@ -14,6 +15,8 @@ from api_key import APIKey
 from db_connection import MongoDBConnection
 from user import User, datetime_from_str, datetime_to_str
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 #  Constants & helpers
@@ -291,6 +294,12 @@ class SessionManager:
         This is a placeholder implementation, as WebRTC sessions would typically
         involve more complex signaling and state management.
         """
+        if not isinstance(session, (SessionUser, SessionAPIKey)):
+            raise TypeError(
+                "login_webrtc expects a SessionUser or SessionAPIKey, "
+                f"got {type(session).__name__}"
+            )
+
         webrtc_session = SessionWebRTC(
             user_id=session.user_id,
             parent_session_id=session.id,
@@ -343,9 +352,7 @@ class SessionManager:
         # `exists` with multiple keys returns count of existing ones
         return await self.redis.exists(*keys) > 0
 
-    async def get_session(
-        self, session_id: str
-    ) -> Optional[Union[SessionUser, SessionAPIKey]]:
+    async def get_session(self, session_id: str) -> Optional[Session]:
         keys = await self._keys_for_session_id(session_id)
         if not keys:
             return None
@@ -354,16 +361,18 @@ class SessionManager:
         if data is None:
             return None
 
-        # Decide type from key shape
-        if ":api_keys:" in keys[0]:
+        k = keys[0]
+        if ":webrtc:" in k:
+            return SessionWebRTC.from_json(data)
+        if ":api_keys:" in k:
             return SessionAPIKey.from_json(data)
         return SessionUser.from_json(data)
 
-    async def get_sessions(self) -> Dict[str, Union[SessionUser, SessionAPIKey]]:
+    async def get_sessions(self) -> Dict[str, Session]:
         """
         Return **all** sessions in Redis, indexed by their session_id.
         """
-        sessions: Dict[str, Union[SessionUser, SessionAPIKey]] = {}
+        sessions: Dict[str, Session] = {}
 
         # user-sessions
         async for key in self.redis.scan_iter(match="session:*:sessions:*"):
@@ -378,6 +387,13 @@ class SessionManager:
             if raw:
                 sa = SessionAPIKey.from_json(raw)
                 sessions[s.id] = sa
+
+        # webrtc-sessions
+        async for key in self.redis.scan_iter(match="session:*:*:*:webrtc:*"):
+            raw = await self.redis.get(key)
+            if raw:
+                sw = SessionWebRTC.from_json(raw)
+                sessions[sw.id] = sw
 
         return sessions
 
