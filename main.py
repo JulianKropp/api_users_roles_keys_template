@@ -1489,6 +1489,13 @@ async def start_recording(
     peer_id: str,
     session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
     ) -> StatusResponse:
+
+    # get the webrtc sessions of this user
+    webrtc_sessions = await SM.get_webrtc_sessions_from_session(session)
+
+    if peer_id not in [ws.id for ws in webrtc_sessions]:
+        raise HTTPException(status_code=403, detail="The peer does not belong to your WebRTC sessions.")
+
     ap = await APM.get_peer(peer_id)
     if not peer_id or ap is None:
         raise HTTPException(status_code=400, detail="Invalid peer ID")

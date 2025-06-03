@@ -420,6 +420,29 @@ class SessionManager:
                 sessions.append(SessionAPIKey.from_json(raw))
         return sessions
 
+    async def get_webrtc_sessions_from_session(self, session: Union[SessionUser, SessionAPIKey]) -> List[SessionWebRTC]:
+        """
+        Get all WebRTC sessions associated with a user or API key session.
+        """
+        if not isinstance(session, (SessionUser, SessionAPIKey)):
+            raise TypeError(
+                "get_webrtc_sessions_from_session expects a SessionUser or SessionAPIKey, "
+                f"got {type(session).__name__}"
+            )
+
+        pattern = build_webrtc_session_key(
+            user_id=session.user_id,
+            user_or_api_session="user" if isinstance(session, SessionUser) else "api_key",
+            session_id=session.id,
+            webrtc_id="*"
+        )
+        webrtc_sessions: List[SessionWebRTC] = []
+        async for key in self.redis.scan_iter(match=pattern):
+            raw = await self.redis.get(key)
+            if raw:
+                webrtc_sessions.append(SessionWebRTC.from_json(raw))
+        return webrtc_sessions
+
 
 
 # --- Test the Simplified Session Manager ---
