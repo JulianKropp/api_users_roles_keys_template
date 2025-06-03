@@ -271,7 +271,10 @@ class SessionManager:
     async def login_apikey(
         self, db: MongoDBConnection, apikey: str
     ) -> Tuple[SessionAPIKey, APIKey]:
-        apikey_obj = APIKey.db_find_by_key(db, apikey)
+        
+        key_hash = APIKey.hash_key(apikey)
+
+        apikey_obj = APIKey.db_find_by_key_hash(db, key_hash)
         if apikey_obj is None:
             raise ValueError("API key not found")
 

@@ -459,10 +459,11 @@ async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKe
         try:
             session, user = await SM.login(System, auth.username, auth.password)
         except Exception as e:
+            logger.error(f"Error during APIKey login: {str(e)}")
             if str(e) == "User not found":
-                raise HTTPException(status_code=404, detail="Username or password are wrong")
+                raise HTTPException(status_code=404, detail="Invalid authentication token")
             elif str(e) == "Incorrect password":
-                raise HTTPException(status_code=403, detail="Username or password are wrong")
+                raise HTTPException(status_code=403, detail="Invalid authentication token")
             else:
                 raise e
         
@@ -482,10 +483,11 @@ async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKe
         try:
             session_api, apikey = await SM.login_apikey(System, auth.key)
         except Exception as e:
-            if str(e) == "APIKey not found":
-                raise HTTPException(status_code=404, detail="APIKey not found")
-            elif str(e) == "APIKey expired":
-                raise HTTPException(status_code=403, detail="APIKey expired")
+            logger.error(f"Error during APIKey login: {str(e)}")
+            if str(e) == "API key not found":
+                raise HTTPException(status_code=404, detail="Invalid authentication token")
+            elif str(e) == "Owner of API key not found":
+                raise HTTPException(status_code=403, detail="Invalid authentication token")
             else:
                 raise e
 
@@ -1054,6 +1056,12 @@ async def api_delete_user(
 # ---------------------------
 class APIKeyResponse(BaseModel):
     id: str
+    roles: List[str]
+    created_at: datetime
+    expiration: Optional[datetime]
+
+class APIKeyCreateResponse(BaseModel):
+    id: str
     key: str
     roles: List[str]
     created_at: datetime
@@ -1075,7 +1083,6 @@ def _list_apikeys(user_id: str) -> List[APIKeyResponse]:
     return [
         APIKeyResponse(
             id=apikey._id,
-            key=apikey.key,
             roles=apikey.roles,
             created_at=apikey.created_at,
             expiration=apikey.expiration,
@@ -1101,14 +1108,13 @@ def _get_apikey(user_id: str, apikey_id: str) -> APIKeyResponse:
 
     return APIKeyResponse(
         id=apikey._id,
-        key=apikey.key,
         roles=apikey.roles,
         created_at=apikey.created_at,
         expiration=apikey.expiration,
     )
 
 
-def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req: APIKeyCreateRequest) -> APIKeyResponse:
+def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req: APIKeyCreateRequest) -> APIKeyCreateResponse:
     # check if expiration date is in the past
     now = datetime.now(timezone.utc)
     if req.expiration is not None and req.expiration < now:
@@ -1132,7 +1138,7 @@ def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req
         if not compare_roles(req_user_roles, r):
             raise HTTPException(status_code=403, detail="You do not have permission to create this api key with this roles. The roles you assigned are broader than your current roles.")
 
-    new_key = APIKey.new(
+    new_key, api_key = APIKey.new(
         user_id=user_id,
         db_connection=System,
         expiration=req.expiration,
@@ -1150,9 +1156,9 @@ def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req
             user_obj.db_update(System)
         raise HTTPException(status_code=500, detail="Failed to create API key")
 
-    return APIKeyResponse(
+    return APIKeyCreateResponse(
         id=new_key._id,
-        key=new_key.key,
+        key=api_key,
         roles=new_key.roles,
         created_at=new_key.created_at,
         expiration=new_key.expiration,
@@ -1217,7 +1223,6 @@ def _update_apikey(
 
     return APIKeyResponse(
         id=apikey_obj._id,
-        key=apikey_obj.key,
         roles=apikey_obj.roles,
         created_at=apikey_obj.created_at,
         expiration=apikey_obj.expiration,
@@ -1282,7 +1287,7 @@ async def api_get_own_apikey(
 
 @app.post(
     "/api/v1/user/{user_id}/apikey",
-    response_model=APIKeyResponse,
+    response_model=APIKeyCreateResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new API key for a specific user.",
 )
@@ -1290,19 +1295,19 @@ async def api_create_apikey(
     user_id: str,
     apikey: APIKeyCreateRequest,
     session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
-) -> APIKeyResponse:
+) -> APIKeyCreateResponse:
     return _create_apikey(session, user_id, apikey)
 
 
 @app.post(
     "/api/v1/user/apikey",
-    response_model=APIKeyResponse,
+    response_model=APIKeyCreateResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new API key for the authenticated user.",
 )
 async def api_create_own_apikey(
     apikey: APIKeyCreateRequest, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
-) -> APIKeyResponse:
+) -> APIKeyCreateResponse:
     # check if the session is called by an apikey
     if isinstance(session, SessionAPIKey):
         raise HTTPException(status_code=403, detail="You cannot create the API key using an API key session. Please use a user session.")
