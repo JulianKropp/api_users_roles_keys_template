@@ -1413,6 +1413,10 @@ async def offer(
         if pc.connectionState in ["failed", "closed"]:
             try:
                 await APM.remove_peer(peer_id)
+                try:
+                    await SM.logout(peer_id)
+                except Exception as e:
+                    logger.error(f"Error logging out peer {peer_id}: {e}")
             except Exception as e:
                 logger.error(f"Error cleaning up peer {peer_id}: {e}")
 
