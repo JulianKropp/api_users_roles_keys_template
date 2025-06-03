@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import fnmatch
 from math import ceil
@@ -327,11 +327,17 @@ def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Req
         # check if the session is of a supported type
         if not isinstance(session, (SessionUser, SessionAPIKey)):
             logger.error(f"Session type {session.__class__.__name__} not supported for token: {session._id}")
-            raise HTTPException(status_code=403, detail="Invalid authentication token. Only User and APIKey sessions are supported.")
+            raise HTTPException(status_code=403, detail="Invalid authentication token")
 
         # get user
         user_or_apikey = get_user_or_apikey_from_session(session)
         
+        # check if apikey is expired
+        if isinstance(user_or_apikey, APIKey):
+            if user_or_apikey.is_expired():
+                logger.error(f"APIKey {user_or_apikey._id} is expired for token: {session._id}")
+                raise HTTPException(status_code=403, detail="Invalid authentication token")
+
         role_ids = user_or_apikey.roles
 
         # Fetch all roles from the database.
@@ -385,6 +391,15 @@ def no_auth() -> Callable[[Request, HTTPAuthorizationCredentials], Awaitable[Uni
         if not isinstance(session, (SessionUser, SessionAPIKey)):
             logger.error(f"Session type {session.__class__.__name__} not supported for token: {session._id}")
             raise HTTPException(status_code=403, detail="Invalid authentication token. Only User and APIKey sessions are supported.")
+
+        # get user
+        user_or_apikey = get_user_or_apikey_from_session(session)
+
+        # check if apikey is expired
+        if isinstance(user_or_apikey, APIKey):
+            if user_or_apikey.is_expired():
+                logger.error(f"APIKey {user_or_apikey._id} is expired for token: {session._id}")
+                raise HTTPException(status_code=403, detail="Invalid authentication token")
 
         return session
 
@@ -1094,6 +1109,11 @@ def _get_apikey(user_id: str, apikey_id: str) -> APIKeyResponse:
 
 
 def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req: APIKeyCreateRequest) -> APIKeyResponse:
+    # check if expiration date is in the past
+    now = datetime.now(timezone.utc)
+    if req.expiration is not None and req.expiration < now:
+        raise HTTPException(status_code=400, detail="Expiration date cannot be in the past")
+
     user_obj = User.db_find_by_id(System, user_id)
     if user_obj is None:
         raise HTTPException(status_code=404, detail="User not found")

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -62,7 +62,7 @@ class Status(Enum):
 @dataclass
 class Session(ABC):
     expiration_date: datetime
-    creation_date: datetime = field(default_factory=datetime.now)
+    creation_date: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     user_id: str = ""
     _id: str = field(default_factory=lambda: f"SESSION-{uuid.uuid4()}")
 
@@ -253,12 +253,14 @@ class SessionManager:
         if hashed != user.password_hash:
             raise ValueError("Incorrect password")
 
-        user.last_login = datetime.now()
+        now = datetime.now(timezone.utc)
+
+        user.last_login = now
         user.db_update(db)
 
         session = SessionUser(
             user_id=user.id,
-            expiration_date=datetime.now() + timedelta(seconds=SESSION_DURATION_SECONDS),
+            expiration_date=now + timedelta(seconds=SESSION_DURATION_SECONDS),
         )
 
         key = build_user_session_key(user.id, session.id)
@@ -280,7 +282,7 @@ class SessionManager:
         session = SessionAPIKey(
             apikey_id=apikey_obj.id,
             user_id=user.id,
-            expiration_date=datetime.now() + timedelta(seconds=SESSION_DURATION_SECONDS),
+            expiration_date=datetime.now(timezone.utc) + timedelta(seconds=SESSION_DURATION_SECONDS),
         )
 
         key = build_apikey_session_key(user.id, apikey_obj.id, session.id)
@@ -314,7 +316,7 @@ class SessionManager:
         )
 
         calculate_expiration = int((
-            session.expiration_date - datetime.now()
+            session.expiration_date - datetime.now(timezone.utc)
         ).total_seconds())
 
         async with self.lock:

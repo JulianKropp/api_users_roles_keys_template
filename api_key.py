@@ -2,7 +2,7 @@
 
 # Helper functions to convert datetime objects to/from strings.
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from typing import List, Optional
 import uuid
@@ -60,7 +60,7 @@ class APIKey:
         return cls(
             key=data["key"],
             user_id=data["user_id"],
-            created_at=create_date if create_date is not None else datetime.now(),
+            created_at=create_date if create_date is not None else datetime.now(timezone.utc),
             expiration=datetime_from_str(data["expiration"]),
             roles=data.get("roles", []),
             _id=data["_id"],
@@ -159,7 +159,7 @@ class APIKey:
         """
         api_key = cls(
             user_id=user_id,
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             expiration=expiration,
             roles=roles if roles else [],
         )
@@ -205,7 +205,7 @@ class APIKey:
             create_date = datetime_from_str(data["created_at"])
             self.key = data["key"]
             self.user_id = data["user_id"]
-            self.created_at = create_date if create_date is not None else datetime.now()
+            self.created_at = create_date if create_date is not None else datetime.now(timezone.utc)
             self.expiration = datetime_from_str(data["expiration"])
             self.roles = data.get("roles", [])
         else:
@@ -234,3 +234,12 @@ class APIKey:
         collection = db_connection.db[cls.COLLECTION_NAME]
         data = collection.find()
         return [cls.from_dict(item) for item in data]
+    
+    def is_expired(self) -> bool:
+        """
+        Check if the API key is expired.
+        """
+        now = datetime.now(timezone.utc)
+        if self.expiration is None:
+            return False
+        return now > self.expiration
