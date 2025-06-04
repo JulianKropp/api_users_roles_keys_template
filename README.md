@@ -4,12 +4,16 @@
 ### Create `.env` file
 ```bash
 cat > .env <<'EOF'
-MONGO_URI="localhost:27017"
-MONGODB_ROOT_USER="admin"
-MONGODB_ROOT_PASSWORD="admin"
-REDIS_URL="redis://localhost:6379"
+HOST="0.0.0.0"
+PORT=8000
 EXTERNAL_URL="http://localhost:8000"
-PORT="8000"
+REDIS_URL="redis://localhost:6379"
+SESSION_DURATION_SECONDS=86400
+WEBRTC_TIMEOUT=5
+MONGO_URI="localhost:27017"
+MONGO_USER="admin"
+MONGO_PASSWORD="admin"
+MONGO_DB_NAME="user_management"
 EOF
 ```
 
