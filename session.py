@@ -377,7 +377,7 @@ class SessionManager:
             raw = await self.redis.get(key)
             if raw:
                 sa = SessionAPIKey.from_json(raw)
-                sessions[s.id] = sa
+                sessions[sa.id] = sa
 
         return sessions
 
