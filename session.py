@@ -21,8 +21,6 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 #  Constants & helpers
 # --------------------------------------------------------------------------- #
-SESSION_DURATION_SECONDS = 60 * 60 * 24  # 24 h
-
 # New Redis key format
 USER_SESSION_KEY     = "session:{user_id}:sessions:{session_id}:data"
 APIKEY_SESSION_KEY   = "session:{user_id}:api_keys:{apikey_id}:sessions:{session_id}:data"
@@ -237,8 +235,9 @@ class SessionManager:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
+    def __init__(self, redis_url: str = "redis://localhost:6379", session_duration: int = 86400) -> None:
         self.redis = redis.from_url(redis_url, decode_responses=True)
+        self.session_duration = session_duration
         self.lock  = asyncio.Lock()
 
     # -- Login helpers ------------------------------------------------------ #
@@ -260,12 +259,12 @@ class SessionManager:
 
         session = SessionUser(
             user_id=user.id,
-            expiration_date=now + timedelta(seconds=SESSION_DURATION_SECONDS),
+            expiration_date=now + timedelta(seconds=self.session_duration),
         )
 
         key = build_user_session_key(user.id, session.id)
         async with self.lock:
-            await self.redis.set(key, session.to_json(), ex=SESSION_DURATION_SECONDS)
+            await self.redis.set(key, session.to_json(), ex=self.session_duration)
         return session, user
 
     async def login_apikey(
@@ -285,12 +284,12 @@ class SessionManager:
         session = SessionAPIKey(
             apikey_id=apikey_obj.id,
             user_id=user.id,
-            expiration_date=datetime.now(timezone.utc) + timedelta(seconds=SESSION_DURATION_SECONDS),
+            expiration_date=datetime.now(timezone.utc) + timedelta(seconds=self.session_duration),
         )
 
         key = build_apikey_session_key(user.id, apikey_obj.id, session.id)
         async with self.lock:
-            await self.redis.set(key, session.to_json(), ex=SESSION_DURATION_SECONDS)
+            await self.redis.set(key, session.to_json(), ex=self.session_duration)
         return session, apikey_obj
 
     async def login_webrtc(self, session: Union[SessionUser, SessionAPIKey]) -> SessionWebRTC:

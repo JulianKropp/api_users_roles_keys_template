@@ -24,6 +24,7 @@ from starlette.datastructures import Headers
 import uvicorn
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 
+from config import Config
 from api_key import APIKey
 from db_connection import MongoDBConnection
 from role import Endpoint, Role, Method
@@ -38,22 +39,16 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------
 # Load environment variables from .env file
-from dotenv import load_dotenv
-load_dotenv()
-
-PORT=int(os.getenv("PORT", 8000))
-EXTERNAL_URL: str = os.getenv("EXTERNAL_URL", "http://localhost:8000")
-REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+CONFIG = Config()
+print(CONFIG.MONGO_USER)
 
 System: MongoDBConnection = MongoDBConnection(
-                mongo_uri=os.getenv("MONGO_URI", "localhost:27017"),
-                user=os.getenv("MONGO_USER", "admin"),
-                password=os.getenv("MONGO_PASSWORD", "admin"),
-                db_name="user_management",
+                mongo_uri=CONFIG.MONGO_URI,
+                user=CONFIG.MONGO_USER,
+                password=CONFIG.MONGO_PASSWORD,
+                db_name=CONFIG.MONGO_DB_NAME,
                 admin=True
             )
-
-WEBRTC_TIMEOUT: int = int(os.getenv("WEBRTC_TIMEOUT", 5))  # Timeout for WebRTC connections in seconds
 
 # API Rate Limiters
 LVL0_RATE_LIMITER = RateLimiter(times=6000, minutes=1)
@@ -61,7 +56,7 @@ LVL1_RATE_LIMITER = RateLimiter(times=600, minutes=1)
 LVL2_RATE_LIMITER = RateLimiter(times=60, minutes=1)
 LVL3_RATE_LIMITER = RateLimiter(times=6, minutes=1)
 
-APM = AudioPeerManager(WEBRTC_TIMEOUT)
+APM = AudioPeerManager(CONFIG.WEBRTC_TIMEOUT)
 
 # ---------------------------
 # Setup db
@@ -83,32 +78,6 @@ if not Role.db_find_by_rolename(System, "boss"):
             )
         ]
     )
-    # user_role = Role.new(
-    #     db_connection=System,
-    #     rolename="user",
-    #     api_endpoints=[
-    #         Endpoint(
-    #             method=Method.GET,
-    #             path_filter="/api/v1/auth/*"
-    #         ),
-    #         Endpoint(
-    #             method=Method.POST,
-    #             path_filter="/api/v1/auth/*"
-    #         ),
-    #         Endpoint(
-    #             method=Method.PUT,
-    #             path_filter="/api/v1/auth/*"
-    #         ),
-    #         Endpoint(
-    #             method=Method.DELETE,
-    #             path_filter="/api/v1/auth/*"
-    #         )
-    #     ]
-    # )
-
-# USER_ROLE = Role.db_find_by_rolename(System, "user")
-# if USER_ROLE is None:
-#     raise Exception("User role not found. Pls reinitialize the database.")
 
 BOSE_ROLE = Role.db_find_by_rolename(System, "boss")
 if BOSE_ROLE is None:
@@ -152,7 +121,7 @@ async def rate_limit_exceeded_callback(request: Request, response: Response, pex
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    redis_connection = redis.from_url(REDIS_URL, encoding="utf8", decode_responses=True)
+    redis_connection = redis.from_url(CONFIG.REDIS_URL, encoding="utf8", decode_responses=True)
     await FastAPILimiter.init(
         redis_connection,
         identifier=service_name_identifier,
@@ -180,7 +149,7 @@ app = FastAPI(
 # ---------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[EXTERNAL_URL],  # Allowed Origins from the frontend
+    allow_origins=[CONFIG.EXTERNAL_URL],  # Allowed Origins from the frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -192,7 +161,7 @@ app.add_middleware(
 security = HTTPBearer()
 
 # Session Manager for getting the user session
-SM = SessionManager()
+SM = SessionManager(session_duration=CONFIG.SESSION_DURATION_SECONDS)
 
 def check_role(role: Role, request: Endpoint) -> bool:
     """
@@ -1454,7 +1423,7 @@ async def offer(
 
     # Call on_close after 5 seconds if the connection isnt astablished
     async def close_after_timeout() -> None:
-        await asyncio.sleep(5)
+        await asyncio.sleep(CONFIG.WEBRTC_TIMEOUT)
         await on_close(peer_id)
     init_time_out = asyncio.create_task(close_after_timeout())
 
@@ -1568,7 +1537,7 @@ async def serve_react_app(full_path: str) -> FileResponse:
 # ---------------------------
 async def main() -> None:
     # Configure the server (this does not call asyncio.run() internally)
-    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
+    config = uvicorn.Config(app, host=CONFIG.HOST, port=CONFIG.PORT, log_level="info")
     server = uvicorn.Server(config)
     # Run the server asynchronously
     await asyncio.gather(
