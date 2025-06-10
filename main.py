@@ -1514,21 +1514,66 @@ async def stop_recording(
 
 
 
-
-
 # ---------------------------
 # Webpage
 # ---------------------------
-app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
+# Mount Next.js static files
+app.mount("/_next", StaticFiles(directory="frontend/out/_next"), name="next_static")
 
-# Catch-all route: For any path, serve the index.html so React can handle routing.
+# Mount other static files at the root
+app.mount("/favicon.ico", StaticFiles(directory="frontend/out", html=True), name="favicon")
+app.mount("/next.svg", StaticFiles(directory="frontend/out", html=True), name="next_svg")
+app.mount("/vercel.svg", StaticFiles(directory="frontend/out", html=True), name="vercel_svg")
+app.mount("/globe.svg", StaticFiles(directory="frontend/out", html=True), name="globe_svg")
+app.mount("/file.svg", StaticFiles(directory="frontend/out", html=True), name="file_svg")
+app.mount("/window.svg", StaticFiles(directory="frontend/out", html=True), name="window_svg")
+
+# Catch-all route: For any path, serve the appropriate HTML file from Next.js output
 @app.get(
     "/{full_path:path}",
     response_class=HTMLResponse,
-    description="Catch-all route that serves the React application's index.html for any unspecified path."
+    description="Catch-all route that serves the Next.js application's HTML files for any unspecified path."
 )
-async def serve_react_app(full_path: str) -> FileResponse:
-    index_path = os.path.join("static-webrtc", "index.html")
+async def serve_nextjs_app(full_path: str) -> FileResponse:
+    # Explizite Weiterleitung zur Login-Seite
+    if full_path == "" or full_path == "/":
+        return FileResponse(os.path.join("frontend/out/index.html"))
+    
+    # Admin Login Seite direkt bedienen
+    if full_path == "admin/login":
+        login_path = os.path.join("frontend/out/admin/login.html")
+        if os.path.exists(login_path):
+            return FileResponse(login_path)
+        # Fallback zur index.html der Login-Seite
+        login_index_path = os.path.join("frontend/out/admin/login/index.html")
+        if os.path.exists(login_index_path):
+            return FileResponse(login_index_path)
+    
+    # Andere Admin-Unterseiten
+    if full_path.startswith("admin/"):
+        # Versuche zuerst die spezifische HTML-Datei
+        specific_html = os.path.join("frontend/out", full_path + ".html")
+        if os.path.exists(specific_html):
+            return FileResponse(specific_html)
+            
+        # Dann versuche die index.html im Unterverzeichnis
+        route_path = os.path.join("frontend/out", full_path, "index.html")
+        if os.path.exists(route_path):
+            return FileResponse(route_path)
+        
+        # Fallback zur admin.html
+        admin_path = os.path.join("frontend/out/admin.html")
+        if os.path.exists(admin_path):
+            return FileResponse(admin_path)
+    
+    # Admin-Hauptseite
+    if full_path == "admin":
+        admin_path = os.path.join("frontend/out/admin.html")
+        if os.path.exists(admin_path):
+            return FileResponse(admin_path)
+    
+    # Default zu index.html
+    index_path = os.path.join("frontend/out/index.html")
     return FileResponse(index_path)
 
 

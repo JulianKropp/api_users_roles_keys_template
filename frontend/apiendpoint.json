@@ -1,0 +1,2153 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+      "title": "User Management API",
+      "description": "An API for managing users, roles, and authentication sessions.",
+      "version": "1.0"
+    },
+    "paths": {
+      "/api/v1/auth/token": {
+        "post": {
+          "summary": "Api Auth Login",
+          "description": "Authenticate a user with a username and password. Creates a new session token and returns detailed session information.",
+          "operationId": "api_auth_login_api_v1_auth_token_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/AuthUserResponse"
+                      },
+                      {
+                        "$ref": "#/components/schemas/AuthAPIKeyResponse"
+                      }
+                    ],
+                    "title": "Response Api Auth Login Api V1 Auth Token Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/auth/status": {
+        "get": {
+          "summary": "Api Auth Status",
+          "description": "Return the current authentication sessions details, including token and user information.",
+          "operationId": "api_auth_status_api_v1_auth_status_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/AuthUserResponse"
+                      },
+                      {
+                        "$ref": "#/components/schemas/AuthAPIKeyResponse"
+                      }
+                    ],
+                    "title": "Response Api Auth Status Api V1 Auth Status Get"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/auth/logout": {
+        "get": {
+          "summary": "Api Auth Logout",
+          "description": "Logout the current user session, invalidating the session token.",
+          "operationId": "api_auth_logout_api_v1_auth_logout_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OK"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/auth/sessions": {
+        "get": {
+          "summary": "Api Auth Sessions",
+          "description": "For administrative users: Retrieve a list of all active sessions with detailed session information.",
+          "operationId": "api_auth_sessions_api_v1_auth_sessions_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/AuthSessionResponse"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/auth/session/logout/{token}": {
+        "get": {
+          "summary": "Api Auth Session Logout",
+          "description": "For administrators only: Logout a specific session identified by its token.",
+          "operationId": "api_auth_session_logout_api_v1_auth_session_logout__token__get",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "token",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Token"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OK"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/roles": {
+        "get": {
+          "summary": "Api Roles",
+          "description": "List all roles in the system.",
+          "operationId": "api_roles_api_v1_roles_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "items": {
+                      "$ref": "#/components/schemas/RoleResponse"
+                    },
+                    "type": "array",
+                    "title": "Response Api Roles Api V1 Roles Get"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/role/{role_id}": {
+        "get": {
+          "summary": "Api Role",
+          "description": "Get a specific role by its ID.",
+          "operationId": "api_role_api_v1_role__role_id__get",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "role_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Role Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RoleResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Api Delete Role",
+          "description": "Delete a specific role by its ID.",
+          "operationId": "api_delete_role_api_v1_role__role_id__delete",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "role_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Role Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OK"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Api Update Role",
+          "description": "Update a specific role by its ID.",
+          "operationId": "api_update_role_api_v1_role__role_id__put",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "role_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Role Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RolePutRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RoleResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/role": {
+        "post": {
+          "summary": "Api Create Role",
+          "description": "Create a new role with specified endpoints.",
+          "operationId": "api_create_role_api_v1_role_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleCreateRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RoleResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/users": {
+        "get": {
+          "summary": "Api Users",
+          "description": "List all users in the system.",
+          "operationId": "api_users_api_v1_users_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "items": {
+                      "$ref": "#/components/schemas/UserResponse"
+                    },
+                    "type": "array",
+                    "title": "Response Api Users Api V1 Users Get"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/user": {
+        "post": {
+          "summary": "Api Create User",
+          "description": "Create a new user in the system.",
+          "operationId": "api_create_user_api_v1_user_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserCreate"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/UserResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/user/password/change": {
+        "put": {
+          "summary": "Api Change User Password",
+          "description": "Change the user password.",
+          "operationId": "api_change_user_password_api_v1_user_password_change_put",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserUpdatePassword"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/UserResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/user/{user_id}/password/reset": {
+        "put": {
+          "summary": "Api Reset User Password",
+          "description": "Reset the user password.",
+          "operationId": "api_reset_user_password_api_v1_user__user_id__password_reset_put",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "user_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "User Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResetPassword"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/UserResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/user/{user_id}/roles": {
+        "put": {
+          "summary": "Api Set User Roles",
+          "description": "Set roles for a user. Requires admin privileges.",
+          "operationId": "api_set_user_roles_api_v1_user__user_id__roles_put",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "user_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "User Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSetRole"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/UserResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/user/{user_id}": {
+        "delete": {
+          "summary": "Api Delete User",
+          "description": "Delete a user. Requires admin privileges.",
+          "operationId": "api_delete_user_api_v1_user__user_id__delete",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "user_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "User Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OK"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/user/{user_id}/apikeys": {
+        "get": {
+          "summary": "Api List Apikeys",
+          "description": "List all API keys for a specific user.",
+          "operationId": "api_list_apikeys_api_v1_user__user_id__apikeys_get",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "user_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "User Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/APIKeyResponse"
+                    },
+                    "title": "Response Api List Apikeys Api V1 User  User Id  Apikeys Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/user/apikeys": {
+        "get": {
+          "summary": "Api List Own Apikeys",
+          "description": "List all API keys for the authenticated user.",
+          "operationId": "api_list_own_apikeys_api_v1_user_apikeys_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "items": {
+                      "$ref": "#/components/schemas/APIKeyResponse"
+                    },
+                    "type": "array",
+                    "title": "Response Api List Own Apikeys Api V1 User Apikeys Get"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/user/{user_id}/apikey/{apikey_id}": {
+        "get": {
+          "summary": "Api Get Apikey",
+          "description": "Get a specific API key for a user.",
+          "operationId": "api_get_apikey_api_v1_user__user_id__apikey__apikey_id__get",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "user_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "User Id"
+              }
+            },
+            {
+              "name": "apikey_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Apikey Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/APIKeyResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Api Delete Apikey",
+          "description": "Delete a specific API key for a user.",
+          "operationId": "api_delete_apikey_api_v1_user__user_id__apikey__apikey_id__delete",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "user_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "User Id"
+              }
+            },
+            {
+              "name": "apikey_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Apikey Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OK"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Api Update Apikey",
+          "description": "Update a specific API key.",
+          "operationId": "api_update_apikey_api_v1_user__user_id__apikey__apikey_id__put",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "user_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "User Id"
+              }
+            },
+            {
+              "name": "apikey_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Apikey Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIKeyPutRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/APIKeyResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/user/apikey/{apikey_id}": {
+        "get": {
+          "summary": "Api Get Own Apikey",
+          "description": "Get one of *your* API keys (user_id from session).",
+          "operationId": "api_get_own_apikey_api_v1_user_apikey__apikey_id__get",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "apikey_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Apikey Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/APIKeyResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "delete": {
+          "summary": "Api Delete Own Apikey",
+          "description": "Delete one of *your* API keys.",
+          "operationId": "api_delete_own_apikey_api_v1_user_apikey__apikey_id__delete",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "apikey_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Apikey Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OK"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "put": {
+          "summary": "Api Update Own Apikey",
+          "description": "Update one of *your* API keys.",
+          "operationId": "api_update_own_apikey_api_v1_user_apikey__apikey_id__put",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "apikey_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Apikey Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIKeyPutRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/APIKeyResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/user/{user_id}/apikey": {
+        "post": {
+          "summary": "Api Create Apikey",
+          "description": "Create a new API key for a specific user.",
+          "operationId": "api_create_apikey_api_v1_user__user_id__apikey_post",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "user_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "User Id"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIKeyCreateRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/APIKeyCreateResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/user/apikey": {
+        "post": {
+          "summary": "Api Create Own Apikey",
+          "description": "Create a new API key for the authenticated user.",
+          "operationId": "api_create_own_apikey_api_v1_user_apikey_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIKeyCreateRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/APIKeyCreateResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/endpoints": {
+        "get": {
+          "summary": "List Endpoints",
+          "description": "List all available API endpoints.",
+          "operationId": "list_endpoints_api_v1_endpoints_get",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "items": {
+                      "$ref": "#/components/schemas/APIendpointResponse"
+                    },
+                    "type": "array",
+                    "title": "Response List Endpoints Api V1 Endpoints Get"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/webrtc/offer": {
+        "post": {
+          "summary": "Offer",
+          "description": "Handle WebRTC offer and return an answer.",
+          "operationId": "offer_api_v1_webrtc_offer_post",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfferRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/OfferResponse"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Bad Request",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ]
+        }
+      },
+      "/api/v1/webrtc/{peer_id}/start_recording": {
+        "post": {
+          "summary": "Start Recording",
+          "description": "Start recording for a specific peer.",
+          "operationId": "start_recording_api_v1_webrtc__peer_id__start_recording_post",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "peer_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Peer Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/StatusResponse"
+                  }
+                }
+              }
+            },
+            "400": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              },
+              "description": "Bad Request"
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/v1/webrtc/{peer_id}/stop_recording": {
+        "delete": {
+          "summary": "Stop Recording",
+          "description": "Stop recording for a specific peer.",
+          "operationId": "stop_recording_api_v1_webrtc__peer_id__stop_recording_delete",
+          "security": [
+            {
+              "HTTPBearer": []
+            }
+          ],
+          "parameters": [
+            {
+              "name": "peer_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Peer Id"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/StatusResponse"
+                  }
+                }
+              }
+            },
+            "400": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              },
+              "description": "Bad Request"
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/{full_path}": {
+        "get": {
+          "summary": "Serve Nextjs App",
+          "description": "Catch-all route that serves the Next.js application's HTML files for any unspecified path.",
+          "operationId": "serve_nextjs_app__full_path__get",
+          "parameters": [
+            {
+              "name": "full_path",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "title": "Full Path"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "text/html": {
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "schemas": {
+        "APIKeyCreateRequest": {
+          "properties": {
+            "roles": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Roles",
+              "default": []
+            },
+            "expiration": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiration"
+            }
+          },
+          "type": "object",
+          "title": "APIKeyCreateRequest"
+        },
+        "APIKeyCreateResponse": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "Id"
+            },
+            "key": {
+              "type": "string",
+              "title": "Key"
+            },
+            "roles": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Roles"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Created At"
+            },
+            "expiration": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiration"
+            }
+          },
+          "type": "object",
+          "required": [
+            "id",
+            "key",
+            "roles",
+            "created_at",
+            "expiration"
+          ],
+          "title": "APIKeyCreateResponse"
+        },
+        "APIKeyPutRequest": {
+          "properties": {
+            "roles": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Roles"
+            },
+            "expiration": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiration"
+            }
+          },
+          "type": "object",
+          "title": "APIKeyPutRequest"
+        },
+        "APIKeyResponse": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "Id"
+            },
+            "roles": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Roles"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Created At"
+            },
+            "expiration": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiration"
+            }
+          },
+          "type": "object",
+          "required": [
+            "id",
+            "roles",
+            "created_at",
+            "expiration"
+          ],
+          "title": "APIKeyResponse"
+        },
+        "APIendpointResponse": {
+          "properties": {
+            "method": {
+              "type": "string",
+              "title": "Method"
+            },
+            "path": {
+              "type": "string",
+              "title": "Path"
+            }
+          },
+          "type": "object",
+          "required": [
+            "method",
+            "path"
+          ],
+          "title": "APIendpointResponse"
+        },
+        "AuthAPIKey": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "Id"
+            },
+            "roles": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Roles"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Created At"
+            },
+            "expiration": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expiration"
+            }
+          },
+          "type": "object",
+          "required": [
+            "id",
+            "roles",
+            "created_at",
+            "expiration"
+          ],
+          "title": "AuthAPIKey"
+        },
+        "AuthAPIKeyResponse": {
+          "properties": {
+            "token": {
+              "type": "string",
+              "title": "Token"
+            },
+            "session_type": {
+              "type": "string",
+              "title": "Session Type"
+            },
+            "creation_date": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Creation Date"
+            },
+            "expiration_date": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Expiration Date"
+            },
+            "api_key": {
+              "$ref": "#/components/schemas/AuthAPIKey"
+            }
+          },
+          "type": "object",
+          "required": [
+            "token",
+            "session_type",
+            "creation_date",
+            "expiration_date",
+            "api_key"
+          ],
+          "title": "AuthAPIKeyResponse"
+        },
+        "AuthRequest": {
+          "properties": {
+            "type": {
+              "type": "string",
+              "title": "Type",
+              "default": "user"
+            },
+            "username": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Username"
+            },
+            "password": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Password"
+            },
+            "key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Key"
+            }
+          },
+          "type": "object",
+          "title": "AuthRequest"
+        },
+        "AuthSessionResponse": {
+          "properties": {
+            "sessions": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AuthUserResponse"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AuthAPIKeyResponse"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AuthWebRTCResponse"
+                  }
+                ]
+              },
+              "type": "array",
+              "title": "Sessions"
+            }
+          },
+          "type": "object",
+          "required": [
+            "sessions"
+          ],
+          "title": "AuthSessionResponse"
+        },
+        "AuthUser": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "Id"
+            },
+            "username": {
+              "type": "string",
+              "title": "Username"
+            },
+            "roles": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Roles"
+            },
+            "last_login": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last Login"
+            }
+          },
+          "type": "object",
+          "required": [
+            "id",
+            "username",
+            "roles",
+            "last_login"
+          ],
+          "title": "AuthUser"
+        },
+        "AuthUserResponse": {
+          "properties": {
+            "token": {
+              "type": "string",
+              "title": "Token"
+            },
+            "session_type": {
+              "type": "string",
+              "title": "Session Type"
+            },
+            "creation_date": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Creation Date"
+            },
+            "expiration_date": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Expiration Date"
+            },
+            "user": {
+              "$ref": "#/components/schemas/AuthUser"
+            }
+          },
+          "type": "object",
+          "required": [
+            "token",
+            "session_type",
+            "creation_date",
+            "expiration_date",
+            "user"
+          ],
+          "title": "AuthUserResponse"
+        },
+        "AuthWebRTCResponse": {
+          "properties": {
+            "token": {
+              "type": "string",
+              "title": "Token"
+            },
+            "session_type": {
+              "type": "string",
+              "title": "Session Type"
+            },
+            "creation_date": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Creation Date"
+            },
+            "expiration_date": {
+              "type": "string",
+              "format": "date-time",
+              "title": "Expiration Date"
+            }
+          },
+          "type": "object",
+          "required": [
+            "token",
+            "session_type",
+            "creation_date",
+            "expiration_date"
+          ],
+          "title": "AuthWebRTCResponse"
+        },
+        "EndpointResponse": {
+          "properties": {
+            "method": {
+              "$ref": "#/components/schemas/MethodResponse"
+            },
+            "path_filter": {
+              "type": "string",
+              "title": "Path Filter"
+            }
+          },
+          "type": "object",
+          "required": [
+            "method",
+            "path_filter"
+          ],
+          "title": "EndpointResponse"
+        },
+        "ErrorResponse": {
+          "properties": {
+            "error": {
+              "type": "string",
+              "title": "Error"
+            }
+          },
+          "type": "object",
+          "required": [
+            "error"
+          ],
+          "title": "ErrorResponse"
+        },
+        "HTTPValidationError": {
+          "properties": {
+            "detail": {
+              "items": {
+                "$ref": "#/components/schemas/ValidationError"
+              },
+              "type": "array",
+              "title": "Detail"
+            }
+          },
+          "type": "object",
+          "title": "HTTPValidationError"
+        },
+        "MethodResponse": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE",
+            "ANY"
+          ],
+          "title": "MethodResponse"
+        },
+        "OK": {
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "title": "Ok"
+            }
+          },
+          "type": "object",
+          "required": [
+            "ok"
+          ],
+          "title": "OK"
+        },
+        "OfferRequest": {
+          "properties": {
+            "sdp": {
+              "type": "string",
+              "title": "Sdp"
+            },
+            "type": {
+              "type": "string",
+              "title": "Type"
+            }
+          },
+          "type": "object",
+          "required": [
+            "sdp",
+            "type"
+          ],
+          "title": "OfferRequest"
+        },
+        "OfferResponse": {
+          "properties": {
+            "sdp": {
+              "type": "string",
+              "title": "Sdp"
+            },
+            "type": {
+              "type": "string",
+              "title": "Type"
+            },
+            "peer_id": {
+              "type": "string",
+              "title": "Peer Id"
+            }
+          },
+          "type": "object",
+          "required": [
+            "sdp",
+            "type",
+            "peer_id"
+          ],
+          "title": "OfferResponse"
+        },
+        "RoleCreateRequest": {
+          "properties": {
+            "rolename": {
+              "type": "string",
+              "title": "Rolename"
+            },
+            "endpoints": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/EndpointResponse"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Endpoints"
+            }
+          },
+          "type": "object",
+          "required": [
+            "rolename"
+          ],
+          "title": "RoleCreateRequest"
+        },
+        "RolePutRequest": {
+          "properties": {
+            "rolename": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rolename"
+            },
+            "endpoints": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/EndpointResponse"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Endpoints"
+            }
+          },
+          "type": "object",
+          "title": "RolePutRequest"
+        },
+        "RoleResponse": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "Id"
+            },
+            "rolename": {
+              "type": "string",
+              "title": "Rolename"
+            },
+            "endpoints": {
+              "items": {
+                "$ref": "#/components/schemas/EndpointResponse"
+              },
+              "type": "array",
+              "title": "Endpoints"
+            }
+          },
+          "type": "object",
+          "required": [
+            "id",
+            "rolename",
+            "endpoints"
+          ],
+          "title": "RoleResponse"
+        },
+        "StatusResponse": {
+          "properties": {
+            "status": {
+              "type": "string",
+              "title": "Status"
+            }
+          },
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "title": "StatusResponse"
+        },
+        "UserCreate": {
+          "properties": {
+            "username": {
+              "type": "string",
+              "title": "Username"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password"
+            },
+            "roles": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Roles",
+              "default": []
+            }
+          },
+          "type": "object",
+          "required": [
+            "username",
+            "password"
+          ],
+          "title": "UserCreate"
+        },
+        "UserResetPassword": {
+          "properties": {
+            "new_password": {
+              "type": "string",
+              "title": "New Password"
+            }
+          },
+          "type": "object",
+          "required": [
+            "new_password"
+          ],
+          "title": "UserResetPassword"
+        },
+        "UserResponse": {
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "Id"
+            },
+            "username": {
+              "type": "string",
+              "title": "Username"
+            },
+            "roles": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Roles"
+            },
+            "last_login": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last Login"
+            }
+          },
+          "type": "object",
+          "required": [
+            "id",
+            "username",
+            "roles",
+            "last_login"
+          ],
+          "title": "UserResponse"
+        },
+        "UserSetRole": {
+          "properties": {
+            "roles": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "title": "Roles"
+            }
+          },
+          "type": "object",
+          "required": [
+            "roles"
+          ],
+          "title": "UserSetRole"
+        },
+        "UserUpdatePassword": {
+          "properties": {
+            "current_password": {
+              "type": "string",
+              "title": "Current Password"
+            },
+            "new_password": {
+              "type": "string",
+              "title": "New Password"
+            }
+          },
+          "type": "object",
+          "required": [
+            "current_password",
+            "new_password"
+          ],
+          "title": "UserUpdatePassword"
+        },
+        "ValidationError": {
+          "properties": {
+            "loc": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "type": "array",
+              "title": "Location"
+            },
+            "msg": {
+              "type": "string",
+              "title": "Message"
+            },
+            "type": {
+              "type": "string",
+              "title": "Error Type"
+            }
+          },
+          "type": "object",
+          "required": [
+            "loc",
+            "msg",
+            "type"
+          ],
+          "title": "ValidationError"
+        }
+      },
+      "securitySchemes": {
+        "HTTPBearer": {
+          "type": "http",
+          "scheme": "bearer"
+        }
+      }
+    }
+  }
