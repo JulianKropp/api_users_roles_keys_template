@@ -1,11 +1,15 @@
 
 
 # Helper functions to convert datetime objects to/from strings.
+import base64
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+import hashlib
 import json
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import uuid
+
+import bcrypt
 
 from db_connection import MongoDBConnection
 
@@ -26,7 +30,7 @@ class APIKey:
     """
     created_at: datetime
     user_id: str
-    key: str = field(default_factory=lambda: f"key-{uuid.uuid4()}")
+    key_hash: str
     expiration: Optional[datetime] = None
     roles: List[str] = field(default_factory=list)
     _id: str = field(default_factory=lambda: f"API-{uuid.uuid4()}")
@@ -43,7 +47,7 @@ class APIKey:
         Converts the APIKey instance to a dictionary.
         """
         return{
-                "key": self.key,
+                "key_hash": self.key_hash,
                 "user_id": self.user_id,
                 "created_at": datetime_to_str(self.created_at),
                 "expiration": datetime_to_str(self.expiration),
@@ -58,9 +62,9 @@ class APIKey:
         """
         create_date = datetime_from_str(data["created_at"])
         return cls(
-            key=data["key"],
+            key_hash=data["key_hash"],
             user_id=data["user_id"],
-            created_at=create_date if create_date is not None else datetime.now(),
+            created_at=create_date if create_date is not None else datetime.now(timezone.utc),
             expiration=datetime_from_str(data["expiration"]),
             roles=data.get("roles", []),
             _id=data["_id"],
@@ -71,7 +75,7 @@ class APIKey:
         Returns a string representation of the APIKey instance.
         """
         return json.dumps({
-            "key": self.key,
+            "key_hash": self.key_hash,
             "user_id": self.user_id,
             "created_at": datetime_to_str(self.created_at),
             "expiration": datetime_to_str(self.expiration),
@@ -99,7 +103,7 @@ class APIKey:
             "validator": {
                 "$jsonSchema": {
                     "bsonType": "object",
-                    "required": ["_id", "key", "user_id", "created_at", "expiration", "roles"],
+                    "required": ["_id", "key_hash", "user_id", "created_at", "roles", "expiration"],
                     "properties": {
                         "_id": {
                             "bsonType": "string",
@@ -109,7 +113,7 @@ class APIKey:
                             "bsonType": "string",
                             "description": "must be a string and is required"
                         },
-                        "key": {
+                        "key_hash": {
                             "bsonType": "string",
                             "description": "must be a string and is required"
                         },
@@ -143,7 +147,7 @@ class APIKey:
                 validationAction=schema["validationAction"]
             )
 
-            db_connection.db[cls.COLLECTION_NAME].create_index([("key", 1)], unique=True)
+            db_connection.db[cls.COLLECTION_NAME].create_index([("key_hash", 1)], unique=True)
     
     @classmethod
     def db_drop_collection(cls, db_connection: MongoDBConnection) -> None:
@@ -153,18 +157,37 @@ class APIKey:
         db_connection.db.drop_collection(cls.COLLECTION_NAME)
 
     @classmethod
-    def new(cls, db_connection: MongoDBConnection, user_id: str, expiration: Optional[datetime] = None, roles: Optional[List[str]] = None) -> "APIKey":
+    def new(cls, db_connection: MongoDBConnection, user_id: str, expiration: Optional[datetime] = None, roles: Optional[List[str]] = None) -> Tuple["APIKey", str]:
         """
         Creates a new APIKey instance and saves it to the database.
         """
+        key = f"key-{uuid.uuid4()}"
+        key_hash = cls.hash_key(key)
+
         api_key = cls(
             user_id=user_id,
-            created_at=datetime.now(),
+            key_hash=key_hash,
+            created_at=datetime.now(timezone.utc),
             expiration=expiration,
             roles=roles if roles else [],
         )
-        return api_key
-    
+        return api_key, key
+
+    @staticmethod
+    def hash_key(key: str) -> str:
+        """
+        Deterministically hash the key using PBKDF2 with a salt derived from the key.
+        """
+        salt = ("key_salt" + key[::-1] + "key_salt").encode()  # not nice but I need to search the hash in the db, so the salt has to be generated out of the key
+        dk = hashlib.pbkdf2_hmac('sha256', key.encode(), salt, 100_000)
+        return base64.b64encode(dk).decode()
+
+    def verify_key(self, key: str) -> bool:
+        """
+        Verify the key against the stored hash.
+        """
+        return self.hash_key(key) == self.key_hash
+
     def db_save(self, db_connection: MongoDBConnection) -> None:
         """
         Save the user object to MongoDB.
@@ -195,6 +218,17 @@ class APIKey:
             return cls.from_dict(data)
         return None
     
+    @classmethod
+    def db_find_by_key_hash(cls, db_connection: MongoDBConnection, key_hash: str) -> Optional["APIKey"]:
+        """
+        Find an APIKey by its key hash.
+        """
+        collection = db_connection.db[cls.COLLECTION_NAME]
+        data = collection.find_one({"key_hash": key_hash})
+        if data:
+            return cls.from_dict(data)
+        return None
+
     def db_refresh(self, db_connection: MongoDBConnection) -> None:
         """
         Refresh the APIKey instance from the database.
@@ -203,9 +237,9 @@ class APIKey:
         data = collection.find_one({"_id": self._id})
         if data:
             create_date = datetime_from_str(data["created_at"])
-            self.key = data["key"]
+            self.key_hash = data["key_hash"]
             self.user_id = data["user_id"]
-            self.created_at = create_date if create_date is not None else datetime.now()
+            self.created_at = create_date if create_date is not None else datetime.now(timezone.utc)
             self.expiration = datetime_from_str(data["expiration"])
             self.roles = data.get("roles", [])
         else:
@@ -234,3 +268,12 @@ class APIKey:
         collection = db_connection.db[cls.COLLECTION_NAME]
         data = collection.find()
         return [cls.from_dict(item) for item in data]
+    
+    def is_expired(self) -> bool:
+        """
+        Check if the API key is expired.
+        """
+        now = datetime.now(timezone.utc)
+        if self.expiration is None:
+            return False
+        return now > self.expiration

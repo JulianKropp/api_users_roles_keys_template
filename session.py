@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
+import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
 import uuid
 import json
@@ -14,12 +15,12 @@ from api_key import APIKey
 from db_connection import MongoDBConnection
 from user import User, datetime_from_str, datetime_to_str
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 #  Constants & helpers
 # --------------------------------------------------------------------------- #
-SESSION_DURATION_SECONDS = 60 * 60 * 24  # 24 h
-
 # New Redis key format
 USER_SESSION_KEY     = "session:{user_id}:sessions:{session_id}:data"
 APIKEY_SESSION_KEY   = "session:{user_id}:api_keys:{apikey_id}:sessions:{session_id}:data"
@@ -59,7 +60,7 @@ class Status(Enum):
 @dataclass
 class Session(ABC):
     expiration_date: datetime
-    creation_date: datetime = field(default_factory=datetime.now)
+    creation_date: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     user_id: str = ""
     _id: str = field(default_factory=lambda: f"SESSION-{uuid.uuid4()}")
 
@@ -234,8 +235,9 @@ class SessionManager:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
+    def __init__(self, redis_url: str = "redis://localhost:6379", session_duration: int = 86400) -> None:
         self.redis = redis.from_url(redis_url, decode_responses=True)
+        self.session_duration = session_duration
         self.lock  = asyncio.Lock()
 
     # -- Login helpers ------------------------------------------------------ #
@@ -250,23 +252,28 @@ class SessionManager:
         if hashed != user.password_hash:
             raise ValueError("Incorrect password")
 
-        user.last_login = datetime.now()
+        now = datetime.now(timezone.utc)
+
+        user.last_login = now
         user.db_update(db)
 
         session = SessionUser(
             user_id=user.id,
-            expiration_date=datetime.now() + timedelta(seconds=SESSION_DURATION_SECONDS),
+            expiration_date=now + timedelta(seconds=self.session_duration),
         )
 
         key = build_user_session_key(user.id, session.id)
         async with self.lock:
-            await self.redis.set(key, session.to_json(), ex=SESSION_DURATION_SECONDS)
+            await self.redis.set(key, session.to_json(), ex=self.session_duration)
         return session, user
 
     async def login_apikey(
         self, db: MongoDBConnection, apikey: str
     ) -> Tuple[SessionAPIKey, APIKey]:
-        apikey_obj = APIKey.db_find_by_key(db, apikey)
+        
+        key_hash = APIKey.hash_key(apikey)
+
+        apikey_obj = APIKey.db_find_by_key_hash(db, key_hash)
         if apikey_obj is None:
             raise ValueError("API key not found")
 
@@ -277,12 +284,12 @@ class SessionManager:
         session = SessionAPIKey(
             apikey_id=apikey_obj.id,
             user_id=user.id,
-            expiration_date=datetime.now() + timedelta(seconds=SESSION_DURATION_SECONDS),
+            expiration_date=datetime.now(timezone.utc) + timedelta(seconds=self.session_duration),
         )
 
         key = build_apikey_session_key(user.id, apikey_obj.id, session.id)
         async with self.lock:
-            await self.redis.set(key, session.to_json(), ex=SESSION_DURATION_SECONDS)
+            await self.redis.set(key, session.to_json(), ex=self.session_duration)
         return session, apikey_obj
 
     async def login_webrtc(self, session: Union[SessionUser, SessionAPIKey]) -> SessionWebRTC:
@@ -291,6 +298,12 @@ class SessionManager:
         This is a placeholder implementation, as WebRTC sessions would typically
         involve more complex signaling and state management.
         """
+        if not isinstance(session, (SessionUser, SessionAPIKey)):
+            raise TypeError(
+                "login_webrtc expects a SessionUser or SessionAPIKey, "
+                f"got {type(session).__name__}"
+            )
+
         webrtc_session = SessionWebRTC(
             user_id=session.user_id,
             parent_session_id=session.id,
@@ -305,7 +318,7 @@ class SessionManager:
         )
 
         calculate_expiration = int((
-            session.expiration_date - datetime.now()
+            session.expiration_date - datetime.now(timezone.utc)
         ).total_seconds())
 
         async with self.lock:
@@ -343,9 +356,7 @@ class SessionManager:
         # `exists` with multiple keys returns count of existing ones
         return await self.redis.exists(*keys) > 0
 
-    async def get_session(
-        self, session_id: str
-    ) -> Optional[Union[SessionUser, SessionAPIKey]]:
+    async def get_session(self, session_id: str) -> Optional[Session]:
         keys = await self._keys_for_session_id(session_id)
         if not keys:
             return None
@@ -354,16 +365,18 @@ class SessionManager:
         if data is None:
             return None
 
-        # Decide type from key shape
-        if ":api_keys:" in keys[0]:
+        k = keys[0]
+        if ":webrtc:" in k:
+            return SessionWebRTC.from_json(data)
+        if ":api_keys:" in k:
             return SessionAPIKey.from_json(data)
         return SessionUser.from_json(data)
 
-    async def get_sessions(self) -> Dict[str, Union[SessionUser, SessionAPIKey]]:
+    async def get_sessions(self) -> Dict[str, Session]:
         """
         Return **all** sessions in Redis, indexed by their session_id.
         """
-        sessions: Dict[str, Union[SessionUser, SessionAPIKey]] = {}
+        sessions: Dict[str, Session] = {}
 
         # user-sessions
         async for key in self.redis.scan_iter(match="session:*:sessions:*"):
@@ -378,6 +391,13 @@ class SessionManager:
             if raw:
                 sa = SessionAPIKey.from_json(raw)
                 sessions[sa.id] = sa
+
+        # webrtc-sessions
+        async for key in self.redis.scan_iter(match="session:*:*:*:webrtc:*"):
+            raw = await self.redis.get(key)
+            if raw:
+                sw = SessionWebRTC.from_json(raw)
+                sessions[sw.id] = sw
 
         return sessions
 
@@ -398,6 +418,29 @@ class SessionManager:
             if raw:
                 sessions.append(SessionAPIKey.from_json(raw))
         return sessions
+
+    async def get_webrtc_sessions_from_session(self, session: Union[SessionUser, SessionAPIKey]) -> List[SessionWebRTC]:
+        """
+        Get all WebRTC sessions associated with a user or API key session.
+        """
+        if not isinstance(session, (SessionUser, SessionAPIKey)):
+            raise TypeError(
+                "get_webrtc_sessions_from_session expects a SessionUser or SessionAPIKey, "
+                f"got {type(session).__name__}"
+            )
+
+        pattern = build_webrtc_session_key(
+            user_id=session.user_id,
+            user_or_api_session="user" if isinstance(session, SessionUser) else "api_key",
+            session_id=session.id,
+            webrtc_id="*"
+        )
+        webrtc_sessions: List[SessionWebRTC] = []
+        async for key in self.redis.scan_iter(match=pattern):
+            raw = await self.redis.get(key)
+            if raw:
+                webrtc_sessions.append(SessionWebRTC.from_json(raw))
+        return webrtc_sessions
 
 
 

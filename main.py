@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 import fnmatch
 from math import ceil
@@ -24,11 +24,12 @@ from starlette.datastructures import Headers
 import uvicorn
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 
+from config import Config
 from api_key import APIKey
 from db_connection import MongoDBConnection
 from role import Endpoint, Role, Method
 from user import User
-from session import SessionWebRTC, SessionAPIKey, SessionUser, SessionManager
+from session import Session, SessionWebRTC, SessionAPIKey, SessionUser, SessionManager
 from webrtc import AudioPeerManager, AudioPeer, ErrorResponse, OfferRequest, OfferResponse, OggOpusRecorder, PeerIDRequest, StatusResponse
 
 logging.basicConfig(level=logging.INFO)
@@ -38,22 +39,16 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------
 # Load environment variables from .env file
-from dotenv import load_dotenv
-load_dotenv()
-
-PORT=int(os.getenv("PORT", 8000))
-EXTERNAL_URL: str = os.getenv("EXTERNAL_URL", "http://localhost:8000")
-REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+CONFIG = Config()
+print(CONFIG.MONGO_USER)
 
 System: MongoDBConnection = MongoDBConnection(
-                mongo_uri=os.getenv("MONGO_URI", "localhost:27017"),
-                user=os.getenv("MONGO_USER", "admin"),
-                password=os.getenv("MONGO_PASSWORD", "admin"),
-                db_name="transcription_service",
+                mongo_uri=CONFIG.MONGO_URI,
+                user=CONFIG.MONGO_USER,
+                password=CONFIG.MONGO_PASSWORD,
+                db_name=CONFIG.MONGO_DB_NAME,
                 admin=True
             )
-
-WEBRTC_TIMEOUT: int = int(os.getenv("WEBRTC_TIMEOUT", 5))  # Timeout for WebRTC connections in seconds
 
 # API Rate Limiters
 LVL0_RATE_LIMITER = RateLimiter(times=6000, minutes=1)
@@ -61,7 +56,7 @@ LVL1_RATE_LIMITER = RateLimiter(times=600, minutes=1)
 LVL2_RATE_LIMITER = RateLimiter(times=60, minutes=1)
 LVL3_RATE_LIMITER = RateLimiter(times=6, minutes=1)
 
-APM = AudioPeerManager(WEBRTC_TIMEOUT)
+APM = AudioPeerManager(CONFIG.WEBRTC_TIMEOUT)
 
 # ---------------------------
 # Setup db
@@ -83,32 +78,6 @@ if not Role.db_find_by_rolename(System, "boss"):
             )
         ]
     )
-    # user_role = Role.new(
-    #     db_connection=System,
-    #     rolename="user",
-    #     api_endpoints=[
-    #         Endpoint(
-    #             method=Method.GET,
-    #             path_filter="/api/v1/auth/*"
-    #         ),
-    #         Endpoint(
-    #             method=Method.POST,
-    #             path_filter="/api/v1/auth/*"
-    #         ),
-    #         Endpoint(
-    #             method=Method.PUT,
-    #             path_filter="/api/v1/auth/*"
-    #         ),
-    #         Endpoint(
-    #             method=Method.DELETE,
-    #             path_filter="/api/v1/auth/*"
-    #         )
-    #     ]
-    # )
-
-# USER_ROLE = Role.db_find_by_rolename(System, "user")
-# if USER_ROLE is None:
-#     raise Exception("User role not found. Pls reinitialize the database.")
 
 BOSE_ROLE = Role.db_find_by_rolename(System, "boss")
 if BOSE_ROLE is None:
@@ -152,7 +121,7 @@ async def rate_limit_exceeded_callback(request: Request, response: Response, pex
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    redis_connection = redis.from_url(REDIS_URL, encoding="utf8", decode_responses=True)
+    redis_connection = redis.from_url(CONFIG.REDIS_URL, encoding="utf8", decode_responses=True)
     await FastAPILimiter.init(
         redis_connection,
         identifier=service_name_identifier,
@@ -170,8 +139,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     lifespan=lifespan,
-    title="Transcription Service",
-    description="A service for transcribing live audio streams.",
+    title="User Management API",
+    description="An API for managing users, roles, and authentication sessions.",
     version="1.0",
 )
 
@@ -180,7 +149,7 @@ app = FastAPI(
 # ---------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[EXTERNAL_URL],  # Allowed Origins from the frontend
+    allow_origins=[CONFIG.EXTERNAL_URL],  # Allowed Origins from the frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -192,7 +161,7 @@ app.add_middleware(
 security = HTTPBearer()
 
 # Session Manager for getting the user session
-SM = SessionManager()
+SM = SessionManager(session_duration=CONFIG.SESSION_DURATION_SECONDS)
 
 def check_role(role: Role, request: Endpoint) -> bool:
     """
@@ -284,7 +253,7 @@ def get_user_roles_by_session(session: Union[SessionUser, SessionAPIKey]) -> Lis
         
         return roles_api
 
-def get_user_or_apikey_from_session(session: Union[SessionUser, SessionAPIKey]) -> Union[User, APIKey]:
+def get_user_or_apikey_from_session(session: Session) -> Union[User, APIKey]:
     
     logger.debug(f"Session of type {session.__class__.__name__} for token: {session._id}")
 
@@ -304,6 +273,9 @@ def get_user_or_apikey_from_session(session: Union[SessionUser, SessionAPIKey]) 
             logger.error(f"APIKey {api_key_id} not found for token: {session._id}")
             raise HTTPException(status_code=403, detail="Invalid authentication token")
         return api_key
+    else:
+        logger.error(f"Session type {session.__class__.__name__} not supported for token: {session._id}")
+        raise HTTPException(status_code=403, detail="Invalid authentication token. Only User and APIKey sessions are supported.")
 
 # get session from token
 def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Request, HTTPAuthorizationCredentials], Awaitable[Union[SessionUser, SessionAPIKey]]]:
@@ -321,9 +293,20 @@ def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Req
             logger.info(f"Session not found for token: {token}")
             raise HTTPException(status_code=403, detail="Invalid authentication token")
 
+        # check if the session is of a supported type
+        if not isinstance(session, (SessionUser, SessionAPIKey)):
+            logger.error(f"Session type {session.__class__.__name__} not supported for token: {session._id}")
+            raise HTTPException(status_code=403, detail="Invalid authentication token")
+
         # get user
         user_or_apikey = get_user_or_apikey_from_session(session)
         
+        # check if apikey is expired
+        if isinstance(user_or_apikey, APIKey):
+            if user_or_apikey.is_expired():
+                logger.error(f"APIKey {user_or_apikey._id} is expired for token: {session._id}")
+                raise HTTPException(status_code=403, detail="Invalid authentication token")
+
         role_ids = user_or_apikey.roles
 
         # Fetch all roles from the database.
@@ -373,6 +356,20 @@ def no_auth() -> Callable[[Request, HTTPAuthorizationCredentials], Awaitable[Uni
             logger.info(f"Session not found for token: {token}")
             raise HTTPException(status_code=403, detail="Invalid authentication token")
 
+        # check if the session is of a supported type
+        if not isinstance(session, (SessionUser, SessionAPIKey)):
+            logger.error(f"Session type {session.__class__.__name__} not supported for token: {session._id}")
+            raise HTTPException(status_code=403, detail="Invalid authentication token. Only User and APIKey sessions are supported.")
+
+        # get user
+        user_or_apikey = get_user_or_apikey_from_session(session)
+
+        # check if apikey is expired
+        if isinstance(user_or_apikey, APIKey):
+            if user_or_apikey.is_expired():
+                logger.error(f"APIKey {user_or_apikey._id} is expired for token: {session._id}")
+                raise HTTPException(status_code=403, detail="Invalid authentication token")
+
         return session
 
     return new_auth
@@ -413,6 +410,12 @@ class AuthAPIKeyResponse(BaseModel):
     expiration_date: datetime
     api_key: AuthAPIKey
 
+class AuthWebRTCResponse(BaseModel):
+    token: str
+    session_type: str
+    creation_date: datetime
+    expiration_date: datetime
+
 @app.post(
     "/api/v1/auth/token",
     response_model=Union[AuthUserResponse, AuthAPIKeyResponse],
@@ -425,10 +428,11 @@ async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKe
         try:
             session, user = await SM.login(System, auth.username, auth.password)
         except Exception as e:
+            logger.error(f"Error during APIKey login: {str(e)}")
             if str(e) == "User not found":
-                raise HTTPException(status_code=404, detail="Username or password are wrong")
+                raise HTTPException(status_code=404, detail="Invalid authentication token")
             elif str(e) == "Incorrect password":
-                raise HTTPException(status_code=403, detail="Username or password are wrong")
+                raise HTTPException(status_code=403, detail="Invalid authentication token")
             else:
                 raise e
         
@@ -448,10 +452,11 @@ async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKe
         try:
             session_api, apikey = await SM.login_apikey(System, auth.key)
         except Exception as e:
-            if str(e) == "APIKey not found":
-                raise HTTPException(status_code=404, detail="APIKey not found")
-            elif str(e) == "APIKey expired":
-                raise HTTPException(status_code=403, detail="APIKey expired")
+            logger.error(f"Error during APIKey login: {str(e)}")
+            if str(e) == "API key not found":
+                raise HTTPException(status_code=404, detail="Invalid authentication token")
+            elif str(e) == "Owner of API key not found":
+                raise HTTPException(status_code=403, detail="Invalid authentication token")
             else:
                 raise e
 
@@ -525,7 +530,7 @@ async def api_auth_logout(session: Union[SessionUser, SessionAPIKey]= Depends(no
 
 
 class AuthSessionResponse(BaseModel):
-    sessions: List[Union[AuthUserResponse, AuthAPIKeyResponse]]
+    sessions: List[Union[AuthUserResponse, AuthAPIKeyResponse, AuthWebRTCResponse]]
 
 @app.get(
     "/api/v1/auth/sessions",
@@ -535,39 +540,47 @@ class AuthSessionResponse(BaseModel):
 )
 async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> AuthSessionResponse:
     sessions = await SM.get_sessions()
-    return_sessions: List[Union[AuthUserResponse, AuthAPIKeyResponse]] = []
+    return_sessions: List[Union[AuthUserResponse, AuthAPIKeyResponse, AuthWebRTCResponse]] = []
     for s in sessions.values():
         # get user or apikey
-        try:
-            user_or_apikey = get_user_or_apikey_from_session(s)
-        except HTTPException as e:
-            continue
+        if isinstance(s, (SessionUser, SessionAPIKey)):
+            try:
+                user_or_apikey = get_user_or_apikey_from_session(s)
+            except HTTPException as e:
+                continue
 
-        if isinstance(user_or_apikey, User):
-            return_sessions.append(AuthUserResponse(
-                token=s._id,
-                session_type="user",
+            if isinstance(user_or_apikey, User):
+                return_sessions.append(AuthUserResponse(
+                    token=s._id,
+                    session_type="user",
+                    creation_date=s.creation_date,
+                    expiration_date=s.expiration_date,
+                    user=AuthUser(
+                        id=user_or_apikey._id,
+                        username=user_or_apikey.username,
+                        roles=user_or_apikey.roles,
+                        last_login=user_or_apikey.last_login
+                    )
+                ))
+            elif isinstance(user_or_apikey, APIKey):
+                return_sessions.append(AuthAPIKeyResponse(
+                    token=s._id,
+                    session_type="apikey",
+                    creation_date=s.creation_date,
+                    expiration_date=s.expiration_date,
+                    api_key=AuthAPIKey(
+                        id=user_or_apikey._id,
+                        roles=user_or_apikey.roles,
+                        created_at=user_or_apikey.created_at,
+                        expiration=user_or_apikey.expiration
+                    )
+                ))
+        elif isinstance(s, SessionWebRTC):
+            return_sessions.append(AuthWebRTCResponse(
+                token=s.id,
+                session_type="webrtc",
                 creation_date=s.creation_date,
-                expiration_date=s.expiration_date,
-                user=AuthUser(
-                    id=user_or_apikey._id,
-                    username=user_or_apikey.username,
-                    roles=user_or_apikey.roles,
-                    last_login=user_or_apikey.last_login
-                )
-            ))
-        elif isinstance(user_or_apikey, APIKey):
-            return_sessions.append(AuthAPIKeyResponse(
-                token=s._id,
-                session_type="apikey",
-                creation_date=s.creation_date,
-                expiration_date=s.expiration_date,
-                api_key=AuthAPIKey(
-                    id=user_or_apikey._id,
-                    roles=user_or_apikey.roles,
-                    created_at=user_or_apikey.created_at,
-                    expiration=user_or_apikey.expiration
-                )
+                expiration_date=s.expiration_date
             ))
 
     return AuthSessionResponse(sessions=return_sessions)
@@ -1012,6 +1025,12 @@ async def api_delete_user(
 # ---------------------------
 class APIKeyResponse(BaseModel):
     id: str
+    roles: List[str]
+    created_at: datetime
+    expiration: Optional[datetime]
+
+class APIKeyCreateResponse(BaseModel):
+    id: str
     key: str
     roles: List[str]
     created_at: datetime
@@ -1033,7 +1052,6 @@ def _list_apikeys(user_id: str) -> List[APIKeyResponse]:
     return [
         APIKeyResponse(
             id=apikey._id,
-            key=apikey.key,
             roles=apikey.roles,
             created_at=apikey.created_at,
             expiration=apikey.expiration,
@@ -1059,14 +1077,18 @@ def _get_apikey(user_id: str, apikey_id: str) -> APIKeyResponse:
 
     return APIKeyResponse(
         id=apikey._id,
-        key=apikey.key,
         roles=apikey.roles,
         created_at=apikey.created_at,
         expiration=apikey.expiration,
     )
 
 
-def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req: APIKeyCreateRequest) -> APIKeyResponse:
+def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req: APIKeyCreateRequest) -> APIKeyCreateResponse:
+    # check if expiration date is in the past
+    now = datetime.now(timezone.utc)
+    if req.expiration is not None and req.expiration < now:
+        raise HTTPException(status_code=400, detail="Expiration date cannot be in the past")
+
     user_obj = User.db_find_by_id(System, user_id)
     if user_obj is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1085,7 +1107,7 @@ def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req
         if not compare_roles(req_user_roles, r):
             raise HTTPException(status_code=403, detail="You do not have permission to create this api key with this roles. The roles you assigned are broader than your current roles.")
 
-    new_key = APIKey.new(
+    new_key, api_key = APIKey.new(
         user_id=user_id,
         db_connection=System,
         expiration=req.expiration,
@@ -1103,9 +1125,9 @@ def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req
             user_obj.db_update(System)
         raise HTTPException(status_code=500, detail="Failed to create API key")
 
-    return APIKeyResponse(
+    return APIKeyCreateResponse(
         id=new_key._id,
-        key=new_key.key,
+        key=api_key,
         roles=new_key.roles,
         created_at=new_key.created_at,
         expiration=new_key.expiration,
@@ -1170,7 +1192,6 @@ def _update_apikey(
 
     return APIKeyResponse(
         id=apikey_obj._id,
-        key=apikey_obj.key,
         roles=apikey_obj.roles,
         created_at=apikey_obj.created_at,
         expiration=apikey_obj.expiration,
@@ -1235,7 +1256,7 @@ async def api_get_own_apikey(
 
 @app.post(
     "/api/v1/user/{user_id}/apikey",
-    response_model=APIKeyResponse,
+    response_model=APIKeyCreateResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new API key for a specific user.",
 )
@@ -1243,19 +1264,19 @@ async def api_create_apikey(
     user_id: str,
     apikey: APIKeyCreateRequest,
     session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
-) -> APIKeyResponse:
+) -> APIKeyCreateResponse:
     return _create_apikey(session, user_id, apikey)
 
 
 @app.post(
     "/api/v1/user/apikey",
-    response_model=APIKeyResponse,
+    response_model=APIKeyCreateResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new API key for the authenticated user.",
 )
 async def api_create_own_apikey(
     apikey: APIKeyCreateRequest, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
-) -> APIKeyResponse:
+) -> APIKeyCreateResponse:
     # check if the session is called by an apikey
     if isinstance(session, SessionAPIKey):
         raise HTTPException(status_code=403, detail="You cannot create the API key using an API key session. Please use a user session.")
@@ -1386,6 +1407,10 @@ async def offer(
         if pc.connectionState in ["failed", "closed"]:
             try:
                 await APM.remove_peer(peer_id)
+                try:
+                    await SM.logout(peer_id)
+                except Exception as e:
+                    logger.error(f"Error logging out peer {peer_id}: {e}")
             except Exception as e:
                 logger.error(f"Error cleaning up peer {peer_id}: {e}")
 
@@ -1396,10 +1421,19 @@ async def offer(
         except Exception as e:
             logger.error(f"Error logging out peer {webrtc_peer_id}: {e}")
 
+    # Call on_close after 5 seconds if the connection isnt astablished
+    async def close_after_timeout() -> None:
+        await asyncio.sleep(CONFIG.WEBRTC_TIMEOUT)
+        await on_close(peer_id)
+    init_time_out = asyncio.create_task(close_after_timeout())
+
     @pc.on("track")
     def on_track(track: MediaStreamTrack) -> None:
         logger.info(f"Received {track.kind} track for peer {peer_id}")
         if track.kind == "audio":
+            # cancel the close_after_timeout task if we received a track
+            init_time_out.cancel()
+            # Create an AudioPeer object to handle the audio track
             peer_obj = AudioPeer(pc=pc, track=track, user_id=session.id, session_id=session.id, peer_id=peer_id, converter=OggOpusRecorder(file_name=peer_id), on_close=on_close)
             APM.add_peer(peer_obj)
 
@@ -1424,6 +1458,13 @@ async def start_recording(
     peer_id: str,
     session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
     ) -> StatusResponse:
+
+    # get the webrtc sessions of this user
+    webrtc_sessions = await SM.get_webrtc_sessions_from_session(session)
+
+    if peer_id not in [ws.id for ws in webrtc_sessions]:
+        raise HTTPException(status_code=403, detail="The peer does not belong to your WebRTC sessions.")
+
     ap = await APM.get_peer(peer_id)
     if not peer_id or ap is None:
         raise HTTPException(status_code=400, detail="Invalid peer ID")
@@ -1496,7 +1537,7 @@ async def serve_react_app(full_path: str) -> FileResponse:
 # ---------------------------
 async def main() -> None:
     # Configure the server (this does not call asyncio.run() internally)
-    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
+    config = uvicorn.Config(app, host=CONFIG.HOST, port=CONFIG.PORT, log_level="info")
     server = uvicorn.Server(config)
     # Run the server asynchronously
     await asyncio.gather(
