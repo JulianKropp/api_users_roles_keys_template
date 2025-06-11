@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # New Redis key format
 SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:data"
+LOGOUT_SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:*"
 USER_SESSION_KEY = "session:{user_id}:sessions:{session_id}:data"
 APIKEY_SESSION_KEY = "session:{user_id}:api_keys:{apikey_id}:sessions:{session_id}:data"
 WEBRTC_SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:node:{node_id}:webrtc:{webrtc_id}:data"
@@ -68,6 +69,22 @@ def build_webrtc_session_key(user_id: str, user_or_api_session: str, session_id:
         session_id=session_id,
         node_id=node_id,
         webrtc_id=webrtc_id
+    )
+
+def build_logout_session_key(user_id: str = "*", user_or_api_session: str = "*", session_id: str = "*") -> str:
+    if user_or_api_session == "user":
+        user_or_api_session = "sessions"
+    elif user_or_api_session == "api_key":
+        user_or_api_session = "api_keys"
+    elif user_or_api_session == "*":
+        user_or_api_session = "*"
+    else:
+        raise ValueError("user_or_api_session must be 'user' or 'api_key'")
+    
+    return LOGOUT_SESSION_KEY.format(
+        user_id=user_id,
+        user_or_api_session=user_or_api_session,
+        session_id=session_id
     )
 
 # --------------------------------------------------------------------------- #
@@ -361,12 +378,42 @@ class SessionManager:
 
     # -- Public API --------------------------------------------------------- #
     async def logout(self, session_id: str) -> None:
-        pattern_key = build_session_key(session_id=session_id)
+        pattern_key = build_logout_session_key(session_id=session_id)
         keys = await self._get_keys(pattern_key)
         if len(keys) == 0:
             return
         async with self.lock:
             await self.redis.delete(keys[0])
+
+    async def logout_user(self, user_id: str) -> None:
+        """
+        This will logout all sessions of a user
+        """
+        pattern_key = build_logout_session_key(user_id=user_id, user_or_api_session="user")
+        keys = await self._get_keys(pattern_key)
+        if len(keys) == 0:
+            return
+        async with self.lock:
+            await self.redis.delete(*keys)
+
+    async def logout_apikey(self, user_id: str) -> None:
+        """
+        This will logout all sessions of an API key of an user
+        """
+        pattern_key = build_logout_session_key(user_id=user_id, user_or_api_session="api_key")
+        keys = await self._get_keys(pattern_key)
+        if len(keys) == 0:
+            return
+        async with self.lock:
+            await self.redis.delete(*keys)
+
+    async def logout_all(self) -> None:
+        pattern_key = build_logout_session_key()
+        keys = await self._get_keys(pattern_key)
+        if len(keys) == 0:
+            return
+        async with self.lock:
+            await self.redis.delete(*keys)
 
     async def set_ttl(self, session_id: str, new_ttl: int) -> None:
         pattern_key: str = build_session_key(session_id=session_id)
