@@ -338,18 +338,16 @@ class SessionManager:
             webrtc_id=webrtc_session.id
         )
 
-        calculate_expiration = int((
-            session.expiration_date - datetime.now(timezone.utc)
-        ).total_seconds())
-
         async with self.lock:
-            await self.redis.set(key, webrtc_session.to_json(), ex=calculate_expiration)
+            await self.redis.set(key, webrtc_session.to_json(), ex=CONFIG.WEBRTC_TIMEOUT*2)
         return webrtc_session
 
-    async def _get_keys(self, key_pattern: str) -> List[str]:
+    async def _get_keys(self, key_pattern: str, first_only: bool = False) -> List[str]:
         keys: List[str] = []
         async for k in self.redis.scan_iter(match=key_pattern):
             keys.append(k)
+            if first_only:
+                break
         return keys
     
     async def _get_value(self, key: str) -> Union[bytes, None]:
@@ -369,6 +367,17 @@ class SessionManager:
             return
         async with self.lock:
             await self.redis.delete(keys[0])
+
+    async def set_ttl(self, session_id: str, new_ttl: int) -> None:
+        pattern_key: str = build_session_key(session_id=session_id)
+        keys = await self._get_keys(pattern_key, first_only=True)
+        if len(keys) == 0:
+            logger.error(f"Unable to set ttl for redis key with pattern: {pattern_key}")
+            return None
+        async with self.lock:
+            await self.redis.expire(keys[0], new_ttl)
+            logger.debug(f"Set ttl of redis key {keys[0]} to {new_ttl}")
+        
 
     async def exists(self, session_id: str) -> bool:
         pattern_key: str = build_session_key(session_id=session_id)

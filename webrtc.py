@@ -26,10 +26,12 @@ import opuslib # type: ignore
 from pydantic import BaseModel
 
 from session import SessionManager
+from config import Config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+CONFIG = Config()
 
 class Converter(ABC):
     @abstractmethod
@@ -507,6 +509,9 @@ class AudioPeerManager:
                 if not await SM.exists(peer_id):
                     logger.info(f"Peer {peer_id} has no active session in Redis, cleaning up")
                     peers_to_cleanup.add(peer_id)
+                else:
+                    # extend the ttl of the redis key
+                    await SM.set_ttl(peer_id, CONFIG.WEBRTC_TIMEOUT)
             
 
             # Clean up peers outside the loop to avoid modifying the dictionary while iterating
