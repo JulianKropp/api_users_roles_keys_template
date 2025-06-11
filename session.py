@@ -12,6 +12,7 @@ import json
 import redis.asyncio as redis
 
 from api_key import APIKey
+from config import Config
 from db_connection import MongoDBConnection
 from user import User, datetime_from_str, datetime_to_str
 
@@ -24,7 +25,9 @@ logger = logging.getLogger(__name__)
 # New Redis key format
 USER_SESSION_KEY     = "session:{user_id}:sessions:{session_id}:data"
 APIKEY_SESSION_KEY   = "session:{user_id}:api_keys:{apikey_id}:sessions:{session_id}:data"
-WEBRTC_SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:webrtc:{webrtc_id}:data"
+WEBRTC_SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:node:{node_id}:webrtc:{webrtc_id}:data"
+
+CONFIG = Config()
 
 def build_user_session_key(user_id: str, session_id: str) -> str:
     return USER_SESSION_KEY.format(user_id=user_id, session_id=session_id)
@@ -34,11 +37,13 @@ def build_apikey_session_key(user_id: str, apikey_id: str, session_id: str) -> s
         user_id=user_id, apikey_id=apikey_id, session_id=session_id
     )
 
-def build_webrtc_session_key(user_id: str, user_or_api_session: str, session_id: str, webrtc_id: str) -> str:
+def build_webrtc_session_key(user_id: str, user_or_api_session: str, session_id: str, webrtc_id: str, node_id: str = CONFIG.NODE_ID) -> str:
     if user_or_api_session == "user":
         user_or_api_session = "sessions"
     elif user_or_api_session == "api_key":
         user_or_api_session = "api_keys"
+    elif user_or_api_session == "*":
+        user_or_api_session = "*"
     else:
         raise ValueError("user_or_api_session must be 'user' or 'api_key'")
     
@@ -46,6 +51,7 @@ def build_webrtc_session_key(user_id: str, user_or_api_session: str, session_id:
         user_id=user_id,
         user_or_api_session=user_or_api_session,
         session_id=session_id,
+        node_id=node_id,
         webrtc_id=webrtc_id
     )
 
@@ -326,7 +332,7 @@ class SessionManager:
         return webrtc_session
 
     # -- Private utilities -------------------------------------------------- #
-    async def _keys_for_session_id(self, session_id: str) -> List[str]:
+    async def _keys_for_session_id(session_id: str) -> List[str]:
         """
         Resolve the *full* Redis key(s) that contain a given session_id.
         """
@@ -379,21 +385,21 @@ class SessionManager:
         sessions: Dict[str, Session] = {}
 
         # user-sessions
-        async for key in self.redis.scan_iter(match="session:*:sessions:*"):
+        async for key in self.redis.scan_iter(match=build_user_session_key(user_id="*", session_id="*")[:-5] + "*"):
             raw = await self.redis.get(key)
             if raw:
                 s = SessionUser.from_json(raw)
                 sessions[s.id] = s
 
         # API-key-sessions
-        async for key in self.redis.scan_iter(match="session:*:api_keys:*:sessions:*"):
+        async for key in self.redis.scan_iter(match=build_apikey_session_key(user_id="*", apikey_id="*", session_id="*")[:-5] + "*"):
             raw = await self.redis.get(key)
             if raw:
                 sa = SessionAPIKey.from_json(raw)
-                sessions[s.id] = sa
+                sessions[sa.id] = sa
 
         # webrtc-sessions
-        async for key in self.redis.scan_iter(match="session:*:*:*:webrtc:*"):
+        async for key in self.redis.scan_iter(match=build_webrtc_session_key(user_id="*", user_or_api_session="user", session_id="*", webrtc_id="*")[:-5] + "*"):
             raw = await self.redis.get(key)
             if raw:
                 sw = SessionWebRTC.from_json(raw)
@@ -402,21 +408,42 @@ class SessionManager:
         return sessions
 
     async def get_sessions_by_user(self, user_id: str) -> List[SessionUser]:
-        pattern = f"session:{user_id}:sessions:*"
+        pattern = build_user_session_key(user_id=user_id, session_id="*")[:-5] + "*"
         sessions: List[SessionUser] = []
         async for key in self.redis.scan_iter(match=pattern):
             raw = await self.redis.get(key)
             if raw:
-                sessions.append(SessionUser.from_json(raw))
+                s = SessionUser.from_json(raw)
+                sessions.append(s)
         return sessions
 
     async def get_sessions_by_apikey(self, apikey_id: str) -> List[SessionAPIKey]:
-        pattern = f"session:*:api_keys:{apikey_id}:sessions:*"
+        pattern = build_apikey_session_key(user_id="*", apikey_id=apikey_id, session_id="*")[:-5] + "*"
         sessions: List[SessionAPIKey] = []
         async for key in self.redis.scan_iter(match=pattern):
             raw = await self.redis.get(key)
             if raw:
-                sessions.append(SessionAPIKey.from_json(raw))
+                sa = SessionAPIKey.from_json(raw)
+                sessions.append(sa)
+        return sessions
+
+    async def get_webrtc_sessions(self, user_id: str = "*", user_or_api_session_type: str = "*", session_id: str = "*", webrtc_id: str = "*", node_id: str = "*") -> List[SessionWebRTC]:
+        sessions: List[SessionWebRTC] = []
+        pattern = build_webrtc_session_key(
+            user_id=user_id,
+            user_or_api_session=user_or_api_session_type,
+            session_id=session_id,
+            node_id=node_id,
+            webrtc_id=webrtc_id
+        )
+
+        async for key in self.redis.scan_iter(match=pattern):
+            raw = await self.redis.get(key)
+            if raw:
+                # all data should be webrtc keys
+                # "session:*:{user_or_api_session}:*:node:{node_id}:webrtc:*:data"
+                sw = SessionWebRTC.from_json(raw)
+                sessions.append(sw)
         return sessions
 
     async def get_webrtc_sessions_from_session(self, session: Union[SessionUser, SessionAPIKey]) -> List[SessionWebRTC]:
@@ -433,6 +460,7 @@ class SessionManager:
             user_id=session.user_id,
             user_or_api_session="user" if isinstance(session, SessionUser) else "api_key",
             session_id=session.id,
+            node_id="*",
             webrtc_id="*"
         )
         webrtc_sessions: List[SessionWebRTC] = []

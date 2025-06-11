@@ -3,6 +3,7 @@ import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Iterable, Mapping, get_args, get_origin
+import uuid
 
 from dotenv import load_dotenv
 
@@ -42,6 +43,11 @@ class Config:
     """
 
     # ---------------- field definitions ----------------
+    NODE_ID: str = field(
+        default=f"NODE-{uuid.uuid4()}",
+        metadata={"env": "NODE_ID"},
+    )
+
     HOST: str = field(
         default="0.0.0.0",
         metadata={"env": "HOST"},

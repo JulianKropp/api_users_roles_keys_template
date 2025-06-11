@@ -7,7 +7,7 @@ import fnmatch
 from math import ceil
 import os
 import re
-from typing import AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple, Union
+from typing import AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple, Union, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -1497,6 +1497,47 @@ async def stop_recording(
     except Exception as e:
         logger.error(f"Error stopping recording: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class WebRTCSession(BaseModel):
+    id: str
+    expiration_date: datetime
+    creation_date: datetime
+    user_id: str
+    parent_session_id: str
+
+@app.get(
+    "/api/v1/webrtc/sessions",
+    response_model=List[WebRTCSession],
+    dependencies=[Depends(LVL2_RATE_LIMITER)]
+)
+async def get_webrtc_sessions(
+    user_id: str = "*",
+    user_or_api_session_type: Literal["user", "api_key", "*"] = "*",
+    session_id: str = "*",
+    node_id: str = "*",
+    webrtc_id: str = "*",
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+) -> List[WebRTCSession]:
+    """
+    Retrieve a list of all WebRTC sessions according to the filters provided.
+    """
+    webrtc_sessions = await SM.get_webrtc_sessions(
+        user_id=user_id,
+        user_or_api_session_type=user_or_api_session_type,
+        session_id=session_id,
+        node_id=node_id,
+        webrtc_id=webrtc_id
+    )
+    return_list = []
+    for s in webrtc_sessions:
+        return_list.append(WebRTCSession(
+            id=s.id,
+            expiration_date=s.expiration_date,
+            creation_date=s.creation_date,
+            user_id=s.user_id,
+            parent_session_id=s.parent_session_id
+        ))
+    return return_list
 
 
 
