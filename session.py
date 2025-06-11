@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 #  Constants & helpers
 # --------------------------------------------------------------------------- #
 # New Redis key format
-USER_SESSION_KEY     = "session:{user_id}:sessions:{session_id}:data"
-APIKEY_SESSION_KEY   = "session:{user_id}:api_keys:{apikey_id}:sessions:{session_id}:data"
+SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:data"
+USER_SESSION_KEY = "session:{user_id}:sessions:{session_id}:data"
+APIKEY_SESSION_KEY = "session:{user_id}:api_keys:{apikey_id}:sessions:{session_id}:data"
 WEBRTC_SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:node:{node_id}:webrtc:{webrtc_id}:data"
 
 CONFIG = Config()
@@ -35,6 +36,20 @@ def build_user_session_key(user_id: str, session_id: str) -> str:
 def build_apikey_session_key(user_id: str, apikey_id: str, session_id: str) -> str:
     return APIKEY_SESSION_KEY.format(
         user_id=user_id, apikey_id=apikey_id, session_id=session_id
+    )
+
+def build_session_key(user_id: str = "*", user_or_api_session: str = "*", session_id: str = "*") -> str:
+    if user_or_api_session == "user":
+        user_or_api_session = "sessions"
+    elif user_or_api_session == "api_key":
+        user_or_api_session = "api_keys"
+    elif user_or_api_session != "*":
+        raise ValueError("user_or_api_session must be 'user', 'api_key', or '*'")
+
+    return SESSION_KEY.format(
+        user_id=user_id,
+        user_or_api_session=user_or_api_session,
+        session_id=session_id
     )
 
 def build_webrtc_session_key(user_id: str, user_or_api_session: str, session_id: str, webrtc_id: str, node_id: str = CONFIG.NODE_ID) -> str:
@@ -331,52 +346,54 @@ class SessionManager:
             await self.redis.set(key, webrtc_session.to_json(), ex=calculate_expiration)
         return webrtc_session
 
-    # -- Private utilities -------------------------------------------------- #
-    async def _keys_for_session_id(session_id: str) -> List[str]:
-        """
-        Resolve the *full* Redis key(s) that contain a given session_id.
-        """
-        patterns = [
-            f"session:*:sessions:{session_id}:*",
-            f"session:*:api_keys:*:sessions:{session_id}:*",
-            f"session:*:*:*:webrtc:{session_id}:*"
-        ]
+    async def _get_keys(self, key_pattern: str) -> List[str]:
         keys: List[str] = []
-        for patt in patterns:
-            async for k in self.redis.scan_iter(match=patt):
-                keys.append(k)
+        async for k in self.redis.scan_iter(match=key_pattern):
+            keys.append(k)
         return keys
+    
+    async def _get_value(self, key: str) -> Union[bytes, None]:
+        data: Union[bytes, None]
+        async for k in self.redis.scan_iter(match=key):
+            # we expect at most one real key; take the first and break
+            data = await self.redis.get(k)
+            break
+        
+        return data
 
     # -- Public API --------------------------------------------------------- #
     async def logout(self, session_id: str) -> None:
-        keys = await self._keys_for_session_id(session_id)
-        if not keys:
+        pattern_key = build_session_key(session_id=session_id)
+        keys = await self._get_keys(pattern_key)
+        if len(keys) == 0:
             return
         async with self.lock:
-            await self.redis.delete(*keys)
+            await self.redis.delete(keys[0])
 
     async def exists(self, session_id: str) -> bool:
-        keys = await self._keys_for_session_id(session_id)
-        if not keys:
-            return False
+        pattern_key: str = build_session_key(session_id=session_id)
+        keys = await self._get_keys(pattern_key)
         # `exists` with multiple keys returns count of existing ones
-        return await self.redis.exists(*keys) > 0
+        return len(keys) > 0
 
     async def get_session(self, session_id: str) -> Optional[Session]:
-        keys = await self._keys_for_session_id(session_id)
-        if not keys:
+        pattern_key: str = build_session_key(session_id=session_id)
+        keys = await self._get_keys(pattern_key)
+        if len(keys) == 0:
+            return None
+        value = await self._get_value(keys[0])
+
+        if value is None:
             return None
 
-        data = await self.redis.get(keys[0])
-        if data is None:
-            return None
+        encoded_data = value.decode() if isinstance(value, (bytes, bytearray)) else value
 
-        k = keys[0]
-        if ":webrtc:" in k:
-            return SessionWebRTC.from_json(data)
-        if ":api_keys:" in k:
-            return SessionAPIKey.from_json(data)
-        return SessionUser.from_json(data)
+        # The key string determines which Session subclass to return.
+        if ":webrtc:" in keys[0]:
+            return SessionWebRTC.from_json(encoded_data)
+        if ":api_keys:" in keys[0]:
+            return SessionAPIKey.from_json(encoded_data)
+        return SessionUser.from_json(encoded_data)
 
     async def get_sessions(self) -> Dict[str, Session]:
         """
