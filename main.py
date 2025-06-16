@@ -77,20 +77,24 @@ if not Role.objects(rolename="boss").first(): # type: ignore[attr-defined]
     print(boss_role.to_mongo())
     boss_role.save()
 
-BOSE_ROLE = Role.objects(rolename="boss").first() # type: ignore[attr-defined]
-if BOSE_ROLE is None:
+BOSS_ROLE = Role.objects(rolename="boss").first() # type: ignore[attr-defined]
+if BOSS_ROLE is None:
     raise Exception("Boss role not found. Please reinitialize the database.")
 
 # create a boss user if it doesn't exist
 if not User.objects(username="boss").first(): # type: ignore[attr-defined]
     boss_user = User(
         username="boss",
-        roles=[BOSE_ROLE]
+        roles=[BOSS_ROLE]
     )
     boss_user.set_password("boss")
     boss_user.save()
 
-
+# check if the boss user has the boss role, and add it if not
+BOSS_USER = User.objects(username="boss").first() # type: ignore[attr-defined]
+if not BOSS_ROLE in BOSS_USER.roles: # type: ignore[attr-defined]
+    BOSS_USER.roles.append(BOSS_ROLE) # type: ignore[attr-defined]
+    BOSS_USER.save()
 
 # ---------------------------
 # FastAPI App Initialization
@@ -501,7 +505,7 @@ class AuthSessionResponse(BaseModel):
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="For administrative users: Retrieve a list of all active sessions with detailed session information."
 )
-async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> AuthSessionResponse:
+async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))) -> AuthSessionResponse:
     """For administrative users: Retrieve a list of all active sessions with detailed session information."""
     sessions = await SM.get_sessions()
     return_sessions: List[Union[AuthUserResponse, AuthAPIKeyResponse, AuthWebRTCResponse]] = []
@@ -561,7 +565,7 @@ async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey] = Depends
     dependencies=[Depends(LVL3_RATE_LIMITER)],
     description="For administrators only: Logout a specific session identified by its token."
 )
-async def api_auth_session_logout(token: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> OK:
+async def api_auth_session_logout(token: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSS_ROLE]))) -> OK:
    
     s = await SM.get_session(token)
     if s is None:
@@ -604,7 +608,7 @@ class RolePutRequest(BaseModel):
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all roles in the system."
 )
-async def api_roles(session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> List[RoleResponse]:
+async def api_roles(session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))) -> List[RoleResponse]:
     """List all roles in the system."""
     roles = Role.objects() # type: ignore[attr-defined]
     return [
@@ -626,7 +630,7 @@ async def api_roles(session: Union[SessionUser, SessionAPIKey] = Depends(auth([B
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Get a specific role by its ID."
 )
-async def api_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> RoleResponse:
+async def api_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSS_ROLE]))) -> RoleResponse:
     """Get a specific role by its ID."""
     role = Role.objects(id=role_id).first() # type: ignore[attr-defined]
     if role is None:
@@ -644,7 +648,7 @@ async def api_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Dep
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new role with specified endpoints."
 )
-async def api_create_role(role: RoleCreateRequest, session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
+async def api_create_role(role: RoleCreateRequest, session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))) -> RoleResponse:
     """Create a new role with specified endpoints."""
     user_roles = get_user_roles_by_session(session)
 
@@ -677,7 +681,7 @@ async def api_create_role(role: RoleCreateRequest, session: Union[SessionUser, S
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Delete a specific role by its ID."
 )
-async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> OK:
+async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))) -> OK:
     """Delete a specific role by its ID."""
     role = Role.objects(id=role_id).first() # type: ignore[attr-defined]
     if role is None:
@@ -694,7 +698,7 @@ async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKe
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Update a specific role by its ID."
 )
-async def api_update_role(role_id: str, role: RolePutRequest, session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
+async def api_update_role(role_id: str, role: RolePutRequest, session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))) -> RoleResponse:
     """Update a specific role by its ID."""
     existing_role = Role.objects(id=role_id).first() # type: ignore[attr-defined]
     if existing_role is None:
@@ -731,7 +735,7 @@ class UserResponse(BaseModel):
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all users in the system."
 )
-async def api_users(session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> List[UserResponse]:
+async def api_users(session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))) -> List[UserResponse]:
     """List all users in the system."""
     users = User.objects() # type: ignore[attr-defined]
     return [
@@ -758,7 +762,7 @@ class UserCreate(BaseModel):
 )
 async def api_create_user(
     user: UserCreate,
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> UserResponse:
     """Create a new user in the system."""
     if User.objects(username=user.username).first(): # type: ignore[attr-defined]
@@ -801,7 +805,7 @@ class UserUpdatePassword(BaseModel):
 )
 async def api_change_user_password(
     password_update: UserUpdatePassword,
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> UserResponse:
     """Update password for the current user."""
     if isinstance(session, SessionAPIKey):
@@ -839,7 +843,7 @@ class UserResetPassword(BaseModel):
 async def api_reset_user_password(
     user_id: str,
     pw: UserResetPassword,
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> UserResponse:
     """Reset the user password."""
     user = User.objects(id=user_id).first() # type: ignore[attr-defined]
@@ -868,7 +872,7 @@ class UserSetRole(BaseModel):
 async def api_set_user_roles(
     user_id: str,
     user_roles: UserSetRole,
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> UserResponse:
     """Set roles for a user. Only accessible by admin."""
     user = User.objects(id=user_id).first() # type: ignore[attr-defined]
@@ -899,7 +903,7 @@ async def api_set_user_roles(
 )
 async def api_delete_user(
     user_id: str,
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> OK:
     """Delete a user. Only accessible by admin."""
     user = User.objects(id=user_id).first() # type: ignore[attr-defined]
@@ -1216,7 +1220,7 @@ def _update_apikey(user_id: str, apikey_id: str, req: APIKeyPutRequest) -> APIKe
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="""List all API keys for a specific user.
     
-    Requires BOSE_ROLE permission.
+    Requires BOSS_ROLE permission.
     """,
     responses={
         200: {"description": "List of API keys retrieved successfully"},
@@ -1227,7 +1231,7 @@ def _update_apikey(user_id: str, apikey_id: str, req: APIKeyPutRequest) -> APIKe
 )
 async def api_list_apikeys(
     user_id: str, 
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> List[APIKeyResponse]:
     """List all API keys for a specific user.
     
@@ -1252,7 +1256,7 @@ async def api_list_apikeys(
     }
 )
 async def api_list_own_apikeys(
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> List[APIKeyResponse]:
     """List all API keys for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
@@ -1271,7 +1275,7 @@ async def api_list_own_apikeys(
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="""Get a specific API key for a user.
     
-    Requires BOSE_ROLE permission.
+    Requires BOSS_ROLE permission.
     """,
     responses={
         200: {"description": "API key retrieved successfully"},
@@ -1283,7 +1287,7 @@ async def api_list_own_apikeys(
 async def api_get_apikey(
     user_id: str, 
     apikey_id: str, 
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> APIKeyResponse:
     """Get a specific API key for a user.
     
@@ -1310,7 +1314,7 @@ async def api_get_apikey(
 )
 async def api_get_own_apikey(
     apikey_id: str, 
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> APIKeyResponse:
     """Get a specific API key for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
@@ -1329,7 +1333,7 @@ async def api_get_own_apikey(
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="""Create a new API key for a specific user.
     
-    Requires BOSE_ROLE permission.
+    Requires BOSS_ROLE permission.
     """,
     responses={
         200: {"description": "API key created successfully"},
@@ -1342,7 +1346,7 @@ async def api_get_own_apikey(
 async def api_create_apikey(
     user_id: str,
     apikey: APIKeyCreateRequest,
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE])),
 ) -> APIKeyCreateResponse:
     """Create a new API key for a specific user.
     
@@ -1369,7 +1373,7 @@ async def api_create_apikey(
 )
 async def api_create_own_apikey(
     apikey: APIKeyCreateRequest, 
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> APIKeyCreateResponse:
     """Create a new API key for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
@@ -1388,7 +1392,7 @@ async def api_create_own_apikey(
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="""Delete a specific API key for a user.
     
-    Requires BOSE_ROLE permission.
+    Requires BOSS_ROLE permission.
     """,
     responses={
         200: {"description": "API key deleted successfully"},
@@ -1400,7 +1404,7 @@ async def api_create_own_apikey(
 async def api_delete_apikey(
     user_id: str, 
     apikey_id: str, 
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> OK:
     """Delete a specific API key for a user.
     
@@ -1427,7 +1431,7 @@ async def api_delete_apikey(
 )
 async def api_delete_own_apikey(
     apikey_id: str, 
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> OK:
     """Delete a specific API key for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
@@ -1446,7 +1450,7 @@ async def api_delete_own_apikey(
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="""Update a specific API key.
     
-    Requires BOSE_ROLE permission.
+    Requires BOSS_ROLE permission.
     """,
     responses={
         200: {"description": "API key updated successfully"},
@@ -1460,7 +1464,7 @@ async def api_update_apikey(
     user_id: str,
     apikey_id: str,
     apikey: APIKeyPutRequest,
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE])),
 ) -> APIKeyResponse:
     """Update a specific API key for a user.
     
@@ -1489,7 +1493,7 @@ async def api_update_apikey(
 async def api_update_own_apikey(
     apikey_id: str,
     apikey: APIKeyPutRequest,
-    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE])),
 ) -> APIKeyResponse:
     """Update a specific API key for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
@@ -1546,7 +1550,7 @@ def list_endpoints() -> List[APIendpointResponse]:
         )
 async def offer(
     request_data: OfferRequest,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSS_ROLE])),
     ) -> OfferResponse:
     offer = RTCSessionDescription(
         sdp=request_data.sdp,
@@ -1613,7 +1617,7 @@ async def offer(
 )
 async def start_recording(
     peer_id: str,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSS_ROLE])),
     ) -> StatusResponse:
 
     # get the webrtc sessions of this user
@@ -1642,7 +1646,7 @@ async def start_recording(
 )
 async def stop_recording(
     peer_id: str,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSS_ROLE])),
     ) -> StatusResponse:
     ap = await APM.get_peer(peer_id)
     if not peer_id or ap is None:
@@ -1673,7 +1677,7 @@ async def get_webrtc_sessions(
     session_id: str = "*",
     node_id: str = "*",
     webrtc_id: str = "*",
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSS_ROLE])),
 ) -> List[WebRTCSession]:
     """
     Retrieve a list of all WebRTC sessions according to the filters provided.
