@@ -54,6 +54,3 @@ class User(Document):
         hashed_bytes: bytes = bcrypt.hashpw(password.encode(), self.password_salt.encode())
         hashed: str = hashed_bytes.decode()
         return hashed == self.password_hash
-
-from api_key import ApiKey
-User.register_delete_rule(ApiKey, 'user', PULL)

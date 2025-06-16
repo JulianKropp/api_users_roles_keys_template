@@ -683,10 +683,6 @@ async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKe
     if role is None:
         raise HTTPException(status_code=404, detail="Role not found")
 
-    # Remove the role from all users and API keys that have it
-    User.objects(roles=role).update(pull__roles=role) # type: ignore[attr-defined]
-    ApiKey.objects(roles=role).update(pull__roles=role) # type: ignore[attr-defined]
-
     # Delete the role
     role.delete()
 

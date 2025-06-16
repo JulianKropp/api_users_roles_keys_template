@@ -85,4 +85,6 @@ class ApiKey(Document):
             User.objects(id=document.user.id).update_one(pull__api_keys=document)
 
 # Connect the signal handler
-signals.pre_delete.connect(ApiKey.pre_delete, sender=ApiKey)
+if not hasattr(ApiKey, '_signals_connected'):  # Prevent duplicate signal connections
+    signals.pre_delete.connect(ApiKey.pre_delete, sender=ApiKey)
+    ApiKey._signals_connected = True
