@@ -519,7 +519,7 @@ async def api_auth_status(session: Union[SessionUser, SessionAPIKey] = Depends(n
 class OK(BaseModel):
     ok: bool
 
-@app.get(
+@app.delete(
     "/api/v1/auth/logout",
     response_model=OK,
     tags=["Authentication"],
@@ -595,7 +595,7 @@ async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey] = Depends
     return AuthSessionResponse(sessions=return_sessions)
 
 
-@app.get(
+@app.delete(
     "/api/v1/auth/session/{token}",
     response_model=OK,
     tags=["Authentication"],
