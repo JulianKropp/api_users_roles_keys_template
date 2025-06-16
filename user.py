@@ -11,6 +11,7 @@ from datetime import datetime
 
 import bcrypt
 from mongoengine import Document
+PULL = 4
 from mongoengine.fields import (
     StringField,
     BooleanField,
@@ -30,7 +31,7 @@ class User(Document):
     created_by = StringField(default="system")  # "system", "ldap", "oidc", "saml", etc.
     disabled = BooleanField(default=False)
     last_login = DateTimeField()
-    roles = ListField(ReferenceField("Role"))
+    roles = ListField(ReferenceField("Role"), reverse_delete_rule=PULL) # type: ignore
     api_keys = ListField(ReferenceField("ApiKey"))
 
     meta = {
@@ -53,3 +54,6 @@ class User(Document):
         hashed_bytes: bytes = bcrypt.hashpw(password.encode(), self.password_salt.encode())
         hashed: str = hashed_bytes.decode()
         return hashed == self.password_hash
+
+from api_key import ApiKey
+User.register_delete_rule(ApiKey, 'user', PULL)

@@ -1105,21 +1105,7 @@ def _delete_apikey(user_id: str, apikey_id: str) -> OK:
                 detail="API key does not belong to the specified user"
             )
 
-        # Remove the API key from the user's list
-        initial_count = len(user.api_keys)
-        user.api_keys = [key for key in user.api_keys if str(key.id) != apikey_id]
-        
-        if len(user.api_keys) == initial_count:
-            # The API key wasn't found in the user's list (shouldn't happen due to previous check)
-            raise HTTPException(
-                status_code=404, 
-                detail="API key not associated with this user"
-            )
-        
-        # Save the updated user document
-        user.save()
-
-        # Also delete the API key document from the database
+        # Delete the API key document from the database
         ApiKey.objects(id=apikey_id).delete()  # type: ignore[attr-defined]
         
         logger.info(f"Deleted API key {apikey_id} for user {user_id}")

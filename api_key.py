@@ -7,7 +7,7 @@ import uuid
 from typing import Tuple, Optional, List
 
 import mongoengine
-from mongoengine import Document
+from mongoengine import Document, signals
 CASCADE = 2
 from mongoengine.fields import (
     DateTimeField,
@@ -15,10 +15,6 @@ from mongoengine.fields import (
     ListField,
     ReferenceField,
 )
-
-if False:
-    from user import User # type: ignore[unreachable]
-    from role import Role
 
 class ApiKey(Document):
     id = StringField(primary_key=True, required=True, default=lambda: f"APIKEY-{uuid.uuid4()}")
@@ -76,3 +72,17 @@ class ApiKey(Document):
         if self.expiration is None:
             return False
         return datetime.now(timezone.utc) > self.expiration
+
+    @classmethod
+    def pre_delete(cls, sender, document, **kwargs):
+        """
+        Signal handler to remove this API key from the user's api_keys list before deletion.
+        This ensures referential integrity when an API key is deleted.
+        """
+        if document.user and document in document.user.api_keys:
+            # Use atomic operation to remove the reference
+            from user import User
+            User.objects(id=document.user.id).update_one(pull__api_keys=document)
+
+# Connect the signal handler
+signals.pre_delete.connect(ApiKey.pre_delete, sender=ApiKey)

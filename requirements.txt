@@ -21,3 +21,4 @@ aiortc
 numpy
 mypy
 opuslib
+blinker>=1.9.0
