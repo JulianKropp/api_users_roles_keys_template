@@ -6,6 +6,7 @@ import hashlib
 import uuid
 from typing import Tuple, Optional, List
 
+from typing import ClassVar
 import mongoengine
 from mongoengine import Document, signals
 CASCADE = 2
@@ -16,7 +17,12 @@ from mongoengine.fields import (
     ReferenceField,
 )
 
+from user import User
+from role import Role
+
 class ApiKey(Document):
+    _signals_connected: ClassVar[bool] = False
+    
     id = StringField(primary_key=True, required=True, default=lambda: f"APIKEY-{uuid.uuid4()}")
     user = ReferenceField('User', required=True, reverse_delete_rule=CASCADE) # type: ignore
     key_hash = StringField(required=True, unique=True)
@@ -73,18 +79,22 @@ class ApiKey(Document):
             return False
         return datetime.now(timezone.utc) > self.expiration
 
-    @classmethod
-    def pre_delete(cls, sender, document, **kwargs):
-        """
-        Signal handler to remove this API key from the user's api_keys list before deletion.
-        This ensures referential integrity when an API key is deleted.
-        """
-        if document.user and document in document.user.api_keys:
-            # Use atomic operation to remove the reference
-            from user import User
-            User.objects(id=document.user.id).update_one(pull__api_keys=document)
+# Connect the signal handler at the module level
+def cleanup_apikey_references(sender, document, **kwargs):
+    """
+    Signal handler to remove this API key from the user's api_keys list before deletion.
+    This ensures referential integrity when an API key is deleted.
+    """
+    if document.user and document in document.user.api_keys:
+        # Use atomic operation to remove the reference
+        from user import User
+        User.objects(id=document.user.id).update_one(pull__api_keys=document)
 
-# Connect the signal handler
-if not hasattr(ApiKey, '_signals_connected'):  # Prevent duplicate signal connections
-    signals.pre_delete.connect(ApiKey.pre_delete, sender=ApiKey)
-    ApiKey._signals_connected = True
+# Connect the signal handler for ApiKey deletion
+def register_signals():
+    if not hasattr(register_signals, '_registered'):
+        signals.pre_delete.connect(cleanup_apikey_references, sender='ApiKey')
+        register_signals._registered = True
+
+# Call the registration function
+register_signals()
