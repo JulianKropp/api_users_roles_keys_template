@@ -23,7 +23,7 @@ from mongoengine.fields import (
 
 class User(Document):
     """Application user stored in the ``users`` MongoDB collection."""
-    id = StringField(primary_key=True, required=True, default=f"USER-{uuid.uuid4()}")
+    id = StringField(primary_key=True, required=True, default=lambda: f"USER-{uuid.uuid4()}")
     username = StringField(required=True, unique=True)
     password_hash = StringField(required=True)
     password_salt = StringField(required=True)
