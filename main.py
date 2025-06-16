@@ -36,6 +36,8 @@ from webrtc import AudioPeerManager, AudioPeer, ErrorResponse, OfferRequest, Off
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+STATUS: Literal["starting", "running", "stopping", "stopped"] = "starting"
+
 # ---------------------------
 # Configuration
 # ---------------------------
@@ -145,8 +147,38 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     lifespan=lifespan,
     title="User Management API",
-    description="An API for managing users, roles, and authentication sessions.",
+    description="An API for managing users, roles, authentication sessions, and API keys.",
     version="1.0",
+    openapi_tags=[
+        {
+            "name": "Webpage",
+            "description": "Webpage endpoints"
+        },
+        {
+            "name": "System",
+            "description": "System information endpoints"
+        },
+        {
+            "name": "Authentication",
+            "description": "User and API key authentication endpoints"
+        },
+        {
+            "name": "Roles",
+            "description": "Role management endpoints"
+        },
+        {
+            "name": "Users",
+            "description": "User management endpoints"
+        },
+        {
+            "name": "API Keys",
+            "description": "API key management endpoints"
+        },
+        {
+            "name": "WebRTC",
+            "description": "WebRTC communication endpoints"
+        }
+    ]
 )
 
 # ---------------------------
@@ -399,7 +431,8 @@ class AuthWebRTCResponse(BaseModel):
 
 @app.post(
     "/api/v1/auth/token",
-    response_model=Union[AuthUserResponse, AuthAPIKeyResponse],
+    response_model=Union[AuthUserResponse, AuthAPIKeyResponse, AuthWebRTCResponse],
+    tags=["Authentication"],
     dependencies=[Depends(LVL3_RATE_LIMITER)],
     description="Authenticate a user with a username and password. Creates a new session token and returns detailed session information."
 )
@@ -446,7 +479,8 @@ async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKe
 
 @app.get(
     "/api/v1/auth/status",
-    response_model=Union[AuthUserResponse, AuthAPIKeyResponse],
+    response_model=Union[AuthUserResponse, AuthAPIKeyResponse, AuthWebRTCResponse],
+    tags=["Authentication"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Return the current authentication sessions details, including token and user information."
 )
@@ -488,6 +522,7 @@ class OK(BaseModel):
 @app.get(
     "/api/v1/auth/logout",
     response_model=OK,
+    tags=["Authentication"],
     dependencies=[Depends(LVL3_RATE_LIMITER)],
     description="Logout the current user session, invalidating the session token."
 )
@@ -502,6 +537,7 @@ class AuthSessionResponse(BaseModel):
 @app.get(
     "/api/v1/auth/sessions",
     response_model=AuthSessionResponse,
+    tags=["Authentication"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="For administrative users: Retrieve a list of all active sessions with detailed session information."
 )
@@ -560,8 +596,9 @@ async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey] = Depends
 
 
 @app.get(
-    "/api/v1/auth/session/logout/{token}",
+    "/api/v1/auth/session/{token}",
     response_model=OK,
+    tags=["Authentication"],
     dependencies=[Depends(LVL3_RATE_LIMITER)],
     description="For administrators only: Logout a specific session identified by its token."
 )
@@ -605,6 +642,7 @@ class RolePutRequest(BaseModel):
 @app.get(
     "/api/v1/roles",
     response_model=List[RoleResponse],
+    tags=["Roles"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all roles in the system."
 )
@@ -627,6 +665,7 @@ async def api_roles(session: Union[SessionUser, SessionAPIKey] = Depends(auth([B
 @app.get(
     "/api/v1/role/{role_id}",
     response_model=RoleResponse,
+    tags=["Roles"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Get a specific role by its ID."
 )
@@ -645,6 +684,8 @@ async def api_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Dep
 @app.post(
     "/api/v1/role",
     response_model=RoleResponse,
+    status_code=201,
+    tags=["Roles"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new role with specified endpoints."
 )
@@ -678,6 +719,7 @@ async def api_create_role(role: RoleCreateRequest, session: Union[SessionUser, S
 @app.delete(
     "/api/v1/role/{role_id}",
     response_model=OK,
+    tags=["Roles"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Delete a specific role by its ID."
 )
@@ -695,6 +737,7 @@ async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKe
 @app.put(
     "/api/v1/role/{role_id}",
     response_model=RoleResponse,
+    tags=["Roles"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Update a specific role by its ID."
 )
@@ -732,6 +775,7 @@ class UserResponse(BaseModel):
 @app.get(
     "/api/v1/users",
     response_model=List[UserResponse],
+    tags=["Users"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all users in the system."
 )
@@ -757,6 +801,8 @@ class UserCreate(BaseModel):
 @app.post(
     "/api/v1/user",
     response_model=UserResponse,
+    status_code=201,
+    tags=["Users"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new user in the system."
 )
@@ -798,15 +844,16 @@ class UserUpdatePassword(BaseModel):
     new_password: str
 
 @app.put(
-    "/api/v1/user/password/change",
-    response_model=UserResponse,
+    "/api/v1/user/password",
+    response_model=OK,
+    tags=["Users"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Change the user password."
+    description="Change own password"
 )
 async def api_change_user_password(
     password_update: UserUpdatePassword,
     session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
-) -> UserResponse:
+) -> OK:
     """Update password for the current user."""
     if isinstance(session, SessionAPIKey):
         raise HTTPException(
@@ -824,27 +871,23 @@ async def api_change_user_password(
     user.set_password(password_update.new_password)
     user.save()
 
-    return UserResponse(
-        id=str(user.id),
-        username=user.username,
-        roles=[str(role.id) for role in user.roles],
-        last_login=user.last_login,
-    )
+    return OK(ok=True)
 
 class UserResetPassword(BaseModel):
     new_password: str
 
 @app.put(
-    "/api/v1/user/{user_id}/password/reset",
-    response_model=UserResponse,
+    "/api/v1/user/{user_id}/password",
+    response_model=OK,
+    tags=["Users"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Reset the user password."
+    description="Reset a user's password (admin only)"
 )
 async def api_reset_user_password(
     user_id: str,
     pw: UserResetPassword,
     session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
-) -> UserResponse:
+) -> OK:
     """Reset the user password."""
     user = User.objects(id=user_id).first() # type: ignore[attr-defined]
     if user is None:
@@ -853,12 +896,7 @@ async def api_reset_user_password(
     user.set_password(pw.new_password)
     user.save()
 
-    return UserResponse(
-        id=str(user.id),
-        username=user.username,
-        roles=[str(role.id) for role in user.roles],
-        last_login=user.last_login,
-    )
+    return OK(ok=True)
 
 class UserSetRole(BaseModel):
     roles: List[str]
@@ -866,8 +904,9 @@ class UserSetRole(BaseModel):
 @app.put(
     "/api/v1/user/{user_id}/roles",
     response_model=UserResponse,
+    tags=["Users"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Set roles for a user. Requires admin privileges."
+    description="Update a user's roles (admin only)"
 )
 async def api_set_user_roles(
     user_id: str,
@@ -898,8 +937,9 @@ async def api_set_user_roles(
 @app.delete(
     "/api/v1/user/{user_id}",
     response_model=OK,
+    tags=["Users"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Delete a user. Requires admin privileges."
+    description="Delete a user (admin only)"
 )
 async def api_delete_user(
     user_id: str,
@@ -1217,43 +1257,24 @@ def _update_apikey(user_id: str, apikey_id: str, req: APIKeyPutRequest) -> APIKe
 @app.get(
     "/api/v1/user/{user_id}/apikeys",
     response_model=List[APIKeyResponse],
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""List all API keys for a specific user.
-    
-    Requires BOSS_ROLE permission.
-    """,
-    responses={
-        200: {"description": "List of API keys retrieved successfully"},
-        403: {"description": "Insufficient permissions"},
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
-    }
+    description="List all API keys for a specific user (admin only)"
 )
 async def api_list_apikeys(
     user_id: str, 
     session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> List[APIKeyResponse]:
-    """List all API keys for a specific user.
-    
-    This endpoint allows administrators to list all API keys for any user.
-    """
+    """List all API keys for a specific user."""
     return _list_apikeys(user_id)
 
 
 @app.get(
-    "/api/v1/user/apikeys",
+    "/api/v1/user/me/apikeys",
     response_model=List[APIKeyResponse],
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""List all API keys for the authenticated user.
-    
-    This endpoint allows users to list their own API keys.
-    Cannot be called using an API key session.
-    """,
-    responses={
-        200: {"description": "List of API keys retrieved successfully"},
-        403: {"description": "Cannot use API key to list API keys"},
-        500: {"description": "Internal server error"}
-    }
+    description="List current user's API keys"
 )
 async def api_list_own_apikeys(
     session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
@@ -1272,45 +1293,25 @@ async def api_list_own_apikeys(
 @app.get(
     "/api/v1/user/{user_id}/apikey/{apikey_id}",
     response_model=APIKeyResponse,
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""Get a specific API key for a user.
-    
-    Requires BOSS_ROLE permission.
-    """,
-    responses={
-        200: {"description": "API key retrieved successfully"},
-        403: {"description": "Insufficient permissions or API key doesn't belong to user"},
-        404: {"description": "User or API key not found"},
-        500: {"description": "Internal server error"}
-    }
+    description="Get a specific API key for a user (admin only)"
 )
 async def api_get_apikey(
     user_id: str, 
     apikey_id: str, 
     session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> APIKeyResponse:
-    """Get a specific API key for a user.
-    
-    This endpoint allows administrators to get any user's API key by ID.
-    """
+    """Get a specific API key for a user."""
     return _get_apikey(user_id, apikey_id)
 
 
 @app.get(
-    "/api/v1/user/apikey/{apikey_id}",
+    "/api/v1/user/me/apikey/{apikey_id}",
     response_model=APIKeyResponse,
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""Get one of your own API keys.
-    
-    This endpoint allows users to get their own API key by ID.
-    Cannot be called using an API key session.
-    """,
-    responses={
-        200: {"description": "API key retrieved successfully"},
-        403: {"description": "Cannot use API key to get API key details"},
-        404: {"description": "API key not found"},
-        500: {"description": "Internal server error"}
-    }
+    description="Get a specific API key for the current user"
 )
 async def api_get_own_apikey(
     apikey_id: str, 
@@ -1323,53 +1324,33 @@ async def api_get_own_apikey(
             status_code=403,
             detail="You cannot get an API key using an API key session. Please use a user session."
         )
-
     return _get_apikey(session.user_id, apikey_id)
 
 
 @app.post(
     "/api/v1/user/{user_id}/apikey",
     response_model=APIKeyCreateResponse,
+    status_code=201,
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""Create a new API key for a specific user.
-    
-    Requires BOSS_ROLE permission.
-    """,
-    responses={
-        200: {"description": "API key created successfully"},
-        400: {"description": "Invalid input (e.g., expiration in past, invalid roles)"},
-        403: {"description": "Insufficient permissions"},
-        404: {"description": "User not found"},
-        500: {"description": "Internal server error"}
-    }
+    description="Create a new API key for a user (admin only)"
 )
 async def api_create_apikey(
     user_id: str,
     apikey: APIKeyCreateRequest,
     session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE])),
 ) -> APIKeyCreateResponse:
-    """Create a new API key for a specific user.
-    
-    This endpoint allows administrators to create API keys for any user.
-    """
+    """Create a new API key for a user."""
     return _create_apikey(session, user_id, apikey)
 
 
 @app.post(
-    "/api/v1/user/apikey",
+    "/api/v1/user/me/apikey",
     response_model=APIKeyCreateResponse,
+    status_code=201,
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""Create a new API key for the authenticated user.
-    
-    This endpoint allows users to create API keys for themselves.
-    Cannot be called using an API key session.
-    """,
-    responses={
-        200: {"description": "API key created successfully"},
-        400: {"description": "Invalid input (e.g., expiration in past, invalid roles)"},
-        403: {"description": "Cannot use API key to create API keys"},
-        500: {"description": "Internal server error"}
-    }
+    description="Create a new API key for the current user"
 )
 async def api_create_own_apikey(
     apikey: APIKeyCreateRequest, 
@@ -1389,45 +1370,25 @@ async def api_create_own_apikey(
 @app.delete(
     "/api/v1/user/{user_id}/apikey/{apikey_id}",
     response_model=OK,
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""Delete a specific API key for a user.
-    
-    Requires BOSS_ROLE permission.
-    """,
-    responses={
-        200: {"description": "API key deleted successfully"},
-        403: {"description": "Insufficient permissions or API key doesn't belong to user"},
-        404: {"description": "User or API key not found"},
-        500: {"description": "Internal server error"}
-    }
+    description="Delete a specific API key for a user (admin only)"
 )
 async def api_delete_apikey(
     user_id: str, 
     apikey_id: str, 
     session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE]))
 ) -> OK:
-    """Delete a specific API key for a user.
-    
-    This endpoint allows administrators to delete any user's API key by ID.
-    """
+    """Delete a specific API key for a user."""
     return _delete_apikey(user_id, apikey_id)
 
 
 @app.delete(
-    "/api/v1/user/apikey/{apikey_id}",
+    "/api/v1/user/me/apikey/{apikey_id}",
     response_model=OK,
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""Delete one of your own API keys.
-    
-    This endpoint allows users to delete their own API keys by ID.
-    Cannot be called using an API key session.
-    """,
-    responses={
-        200: {"description": "API key deleted successfully"},
-        403: {"description": "Cannot use API key to delete API keys"},
-        404: {"description": "API key not found"},
-        500: {"description": "Internal server error"}
-    }
+    description="Delete a specific API key for the current user"
 )
 async def api_delete_own_apikey(
     apikey_id: str, 
@@ -1447,18 +1408,9 @@ async def api_delete_own_apikey(
 @app.put(
     "/api/v1/user/{user_id}/apikey/{apikey_id}",
     response_model=APIKeyResponse,
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""Update a specific API key.
-    
-    Requires BOSS_ROLE permission.
-    """,
-    responses={
-        200: {"description": "API key updated successfully"},
-        400: {"description": "Invalid input (e.g., expiration in past, invalid roles)"},
-        403: {"description": "Insufficient permissions or API key doesn't belong to user"},
-        404: {"description": "User or API key not found"},
-        500: {"description": "Internal server error"}
-    }
+    description="Update a specific API key for a user (admin only)"
 )
 async def api_update_apikey(
     user_id: str,
@@ -1466,29 +1418,16 @@ async def api_update_apikey(
     apikey: APIKeyPutRequest,
     session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSS_ROLE])),
 ) -> APIKeyResponse:
-    """Update a specific API key for a user.
-    
-    This endpoint allows administrators to update any user's API key by ID.
-    """
+    """Update a specific API key for a user."""
     return _update_apikey(user_id, apikey_id, apikey)
 
 
 @app.put(
-    "/api/v1/user/apikey/{apikey_id}",
+    "/api/v1/user/me/apikey/{apikey_id}",
     response_model=APIKeyResponse,
+    tags=["API Keys"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="""Update one of your own API keys.
-    
-    This endpoint allows users to update their own API keys by ID.
-    Cannot be called using an API key session.
-    """,
-    responses={
-        200: {"description": "API key updated successfully"},
-        400: {"description": "Invalid input (e.g., expiration in past, invalid roles)"},
-        403: {"description": "Cannot use API key to update API keys"},
-        404: {"description": "API key not found"},
-        500: {"description": "Internal server error"}
-    }
+    description="Update a specific API key for the current user"
 )
 async def api_update_own_apikey(
     apikey_id: str,
@@ -1517,8 +1456,9 @@ class APIendpointResponse(BaseModel):
 @app.get(
     "/api/v1/endpoints",
     response_model=List[APIendpointResponse],
+    tags=["System"],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="List all available API endpoints."
+    description="List all available API endpoints"
 )
 def list_endpoints() -> List[APIendpointResponse]:
     endpoints: List[APIendpointResponse] = []
@@ -1537,6 +1477,22 @@ def list_endpoints() -> List[APIendpointResponse]:
                 )
     return endpoints
 
+class APIHealthResponse(BaseModel):
+    status: Literal["starting", "running", "stopping", "stopped"]
+    version: str
+
+@app.get(
+    "/api/v1/health",
+    response_model=APIHealthResponse,
+    tags=["System"],
+    dependencies=[Depends(LVL2_RATE_LIMITER)],
+    description="Check if the API is running"
+)
+def health() -> APIHealthResponse:
+    return APIHealthResponse(
+        status=STATUS,
+        version="1.0.0"
+    )
 
 # ---------------------------
 # WebRTC
@@ -1544,6 +1500,7 @@ def list_endpoints() -> List[APIendpointResponse]:
 @app.post(
         "/api/v1/webrtc/offer",
         response_model=OfferResponse,
+        tags=["WebRTC"],
         responses={400: {"model": ErrorResponse}},
         dependencies=[Depends(LVL2_RATE_LIMITER)],
         description="Handle WebRTC offer and return an answer."
@@ -1609,8 +1566,9 @@ async def offer(
     )
 
 @app.post(
-    "/api/v1/webrtc/{peer_id}/start_recording",
+    "/api/v1/webrtc/recording/{peer_id}/start",
     response_model=StatusResponse,
+    tags=["WebRTC"],
     responses={400: {"model": ErrorResponse}},
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Start recording for a specific peer."
@@ -1639,6 +1597,7 @@ async def start_recording(
 
 @app.delete(
     "/api/v1/webrtc/{peer_id}/stop_recording",
+    tags=["WebRTC"],
     response_model=StatusResponse,
     responses={400: {"model": ErrorResponse}},
     dependencies=[Depends(LVL2_RATE_LIMITER)],
@@ -1668,6 +1627,7 @@ class WebRTCSession(BaseModel):
 
 @app.get(
     "/api/v1/webrtc/sessions",
+    tags=["WebRTC"],
     response_model=List[WebRTCSession],
     dependencies=[Depends(LVL2_RATE_LIMITER)]
 )
@@ -1726,6 +1686,7 @@ app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets
 # Catch-all route: For any path, serve the index.html so React can handle routing.
 @app.get(
     "/{full_path:path}",
+    tags=["Webpage"],
     response_class=HTMLResponse,
     description="Catch-all route that serves the React application's index.html for any unspecified path."
 )
@@ -1747,4 +1708,6 @@ async def main() -> None:
     )
 
 if __name__ == "__main__":
+    STATUS = "running"
     asyncio.run(main())
+    STATUS = "stopped"
