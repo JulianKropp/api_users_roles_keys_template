@@ -7,6 +7,8 @@ redis
 pymongo
 slowapi
 fastapi-limiter
+mongoengine
+mongo-types
 python-multipart
 bcrypt
 pytest

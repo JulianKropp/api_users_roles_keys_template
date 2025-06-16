@@ -78,9 +78,14 @@ class Config:
         metadata={"env": "WEBRTC_TIMEOUT"},
     )
 
-    MONGO_URI: str = field(
-        default="localhost:27017",
-        metadata={"env": "MONGO_URI"},
+    MONGO_HOST: str = field(
+        default="localhost",
+        metadata={"env": "MONGO_HOST"},
+    )
+
+    MONGO_PORT: int = field(
+        default=27017,
+        metadata={"env": "MONGO_PORT"},
     )
 
     MONGO_USER: str = field(
@@ -91,6 +96,11 @@ class Config:
     MONGO_PASSWORD: str = field(
         default="admin",
         metadata={"env": "MONGO_PASSWORD"},
+    )
+
+    MONGO_AUTH_SOURCE: str = field(
+        default="admin",
+        metadata={"env": "MONGO_AUTH_SOURCE"},
     )
 
     MONGO_DB_NAME: str = field(

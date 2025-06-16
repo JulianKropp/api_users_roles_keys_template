@@ -11,10 +11,10 @@ import json
 # Async Redis client  (pip install redis)
 import redis.asyncio as redis
 
-from api_key import APIKey
+from api_key import ApiKey
 from config import Config
-from db_connection import MongoDBConnection
-from user import User, datetime_from_str, datetime_to_str
+from user import User
+from role import Role
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -87,6 +87,13 @@ def build_logout_session_key(user_id: str = "*", user_or_api_session: str = "*",
         session_id=session_id
     )
 
+# Helper converters
+def datetime_to_str(dt: datetime) -> str:
+    return dt.isoformat()
+
+def str_to_datetime(dt_str: str) -> datetime:
+    return datetime.fromisoformat(dt_str)
+
 # --------------------------------------------------------------------------- #
 #  Session dataclasses
 # --------------------------------------------------------------------------- #
@@ -157,8 +164,8 @@ class SessionUser(Session):
         and rebuilds the nested User object.
         """        
         # Convert string dates back to datetime objects.
-        creation_date = datetime_from_str(data.get("creation_date"))
-        expiration_date = datetime_from_str(data.get("expiration_date"))
+        creation_date = str_to_datetime(data["creation_date"])
+        expiration_date = str_to_datetime(data["expiration_date"])
 
         if creation_date is None:
             raise ValueError("creation_date is required")
@@ -199,8 +206,8 @@ class SessionAPIKey(Session):
         and rebuilds the nested User object.
         """        
         # Convert string dates back to datetime objects.
-        creation_date = datetime_from_str(data.get("creation_date"))
-        expiration_date = datetime_from_str(data.get("expiration_date"))
+        creation_date = str_to_datetime(data["creation_date"])
+        expiration_date = str_to_datetime(data["expiration_date"])
 
         if creation_date is None:
             raise ValueError("creation_date is required")
@@ -241,8 +248,8 @@ class SessionWebRTC(Session):
         and rebuilds the nested User object.
         """        
         # Convert string dates back to datetime objects.
-        creation_date = datetime_from_str(data.get("creation_date"))
-        expiration_date = datetime_from_str(data.get("expiration_date"))
+        creation_date = str_to_datetime(data["creation_date"])
+        expiration_date = str_to_datetime(data["expiration_date"])
 
         if creation_date is None:
             raise ValueError("creation_date is required")
@@ -279,53 +286,49 @@ class SessionManager:
         self.lock  = asyncio.Lock()
 
     # -- Login helpers ------------------------------------------------------ #
-    async def login(
-        self, db: MongoDBConnection, username: str, password: str
-    ) -> Tuple[SessionUser, User]:
-        user = User.db_find_by_username(db, username)
+    async def login(self, username: str, password: str) -> Tuple[SessionUser, User]:
+        user = User.objects(username=username).first() # type: ignore[attr-defined]
         if user is None:
             raise ValueError("User not found")
 
-        hashed, _ = User.hash_password(password, user.password_salt)
-        if hashed != user.password_hash:
+        if not user.verify_password(password):
             raise ValueError("Incorrect password")
 
         now = datetime.now(timezone.utc)
-
         user.last_login = now
-        user.db_update(db)
+        user.save()
 
         session = SessionUser(
-            user_id=user.id,
+            user_id=str(user.id),
             expiration_date=now + timedelta(seconds=self.session_duration),
         )
 
-        key = build_user_session_key(user.id, session.id)
+        key = build_user_session_key(str(user.id), session.id)
         async with self.lock:
             await self.redis.set(key, session.to_json(), ex=self.session_duration)
         return session, user
 
-    async def login_apikey(
-        self, db: MongoDBConnection, apikey: str
-    ) -> Tuple[SessionAPIKey, APIKey]:
-        
-        key_hash = APIKey.hash_key(apikey)
+    async def login_apikey(self, apikey: str) -> Tuple[SessionAPIKey, ApiKey]:
+        key_hash = ApiKey.hash_key(apikey)
 
-        apikey_obj = APIKey.db_find_by_key_hash(db, key_hash)
+        apikey_obj = ApiKey.objects(key_hash=key_hash).first() # type: ignore[attr-defined]
         if apikey_obj is None:
             raise ValueError("API key not found")
 
-        user = User.db_find_by_id(db, apikey_obj.user_id)
+        if apikey_obj.expiration and apikey_obj.expiration < datetime.now(timezone.utc):
+            raise ValueError("API key expired")
+
+        user = apikey_obj.user
         if user is None:
             raise ValueError("Owner of API key not found")
 
         session = SessionAPIKey(
-            apikey_id=apikey_obj.id,
-            user_id=user.id,
+            apikey_id=str(apikey_obj.id),
+            user_id=str(user.id),
             expiration_date=datetime.now(timezone.utc) + timedelta(seconds=self.session_duration),
         )
 
-        key = build_apikey_session_key(user.id, apikey_obj.id, session.id)
+        key = build_apikey_session_key(str(user.id), str(apikey_obj.id), session.id)
         async with self.lock:
             await self.redis.set(key, session.to_json(), ex=self.session_duration)
         return session, apikey_obj
@@ -547,45 +550,53 @@ class SessionManager:
 
 # --- Test the Simplified Session Manager ---
 async def test_session_manager() -> None:
-    MONGODB_URI = "localhost:27017"
-    MONGODB_DB_NAME = "photo_booth"
+    from mongoengine import connect
+    from mongoengine.connection import disconnect as mongo_disconnect
+    from role import Role
+    from user import User
+
+    # Disconnect any existing connections to start fresh
+    mongo_disconnect()
+    MONGODB_URI = "mongodb://localhost:27017/photo_booth_test"
     MONGODB_ADMIN_USER = "admin"
     MONGODB_ADMIN_PASSWORD = "admin"
 
-    db_connection = MongoDBConnection(
-        mongo_uri=MONGODB_URI,
-        user=MONGODB_ADMIN_USER,
-        password=MONGODB_ADMIN_PASSWORD,
-        db_name=MONGODB_DB_NAME,
-        admin=True
-    )
+    # Connect to the test database
+    connect(host=MONGODB_URI)
+
     session_manager = SessionManager(redis_url="redis://localhost:6379")
 
-    # create user admin if not exists
-    User.db_create_collection(db_connection)
-    if not User.db_find_by_username(db_connection, MONGODB_ADMIN_USER):
-        User.new(
-            db_connection=db_connection,
-            username=MONGODB_ADMIN_USER,
-            password=MONGODB_ADMIN_PASSWORD,
-            roles_id=["admin"]
-        )
+    # Create a test role if it doesn't exist
+    admin_role = Role.objects(rolename="admin").first() # type: ignore[attr-defined]
+    if not admin_role:
+        admin_role = Role(rolename="admin").save()
+
+    # Create a test user if it doesn't exist
+    if not User.objects(username=MONGODB_ADMIN_USER).first(): # type: ignore[attr-defined]
+        admin_user = User(username=MONGODB_ADMIN_USER, roles=[admin_role])
+        admin_user.set_password(MONGODB_ADMIN_PASSWORD)
+        admin_user.save()
 
     # Log in to create a session.
-    session_user = await session_manager.login(db_connection, MONGODB_ADMIN_USER, MONGODB_ADMIN_PASSWORD)
+    session_user = await session_manager.login(MONGODB_ADMIN_USER, MONGODB_ADMIN_PASSWORD)
     session, user = session_user
-    print(f"Created session: {session._id}, user_id: {session.user_id}, roles: {user.roles}")
+    print(f"Created session: {session._id}, user_id: {session.user_id}, roles: {[str(r.id) for r in user.roles]}")
 
     sessions = await session_manager.get_sessions()
     print("Active sessions:", list(sessions.keys()))
 
     # Log out of the session.
     await session.logout()
-    print(f"Session {session._id}")
+    print(f"Session {session._id} logged out")
 
     # Check that the session is removed from Redis.
     sessions = await session_manager.get_sessions()
     print("Active sessions after logout:", list(sessions.keys()))
+
+    # Clean up the test database
+    User.objects().delete() # type: ignore[attr-defined]
+    Role.objects().delete() # type: ignore[attr-defined]
+    mongo_disconnect()
 
 
 if __name__ == "__main__":

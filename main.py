@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 import fnmatch
 from math import ceil
@@ -25,10 +25,11 @@ import uvicorn
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 
 from config import Config
-from api_key import APIKey
-from db_connection import MongoDBConnection
-from role import Endpoint, Role, Method
+from mongoengine import Document, connect
+from mongoengine import disconnect # type: ignore
 from user import User
+from role import Endpoint, Role, Method
+from api_key import ApiKey
 from session import Session, SessionWebRTC, SessionAPIKey, SessionUser, SessionManager
 from webrtc import AudioPeerManager, AudioPeer, ErrorResponse, OfferRequest, OfferResponse, OggOpusRecorder, PeerIDRequest, StatusResponse
 
@@ -40,15 +41,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------
 # Load environment variables from .env file
 CONFIG = Config()
-print(CONFIG.MONGO_USER)
 
-System: MongoDBConnection = MongoDBConnection(
-                mongo_uri=CONFIG.MONGO_URI,
-                user=CONFIG.MONGO_USER,
-                password=CONFIG.MONGO_PASSWORD,
-                db_name=CONFIG.MONGO_DB_NAME,
-                admin=True
-            )
+# connect to db
+connect(
+    db=CONFIG.MONGO_DB_NAME,
+    host=CONFIG.MONGO_HOST,
+    port=CONFIG.MONGO_PORT,
+    username=CONFIG.MONGO_USER,
+    password=CONFIG.MONGO_PASSWORD,
+    authentication_source=CONFIG.MONGO_AUTH_SOURCE
+)
 
 # API Rate Limiters
 LVL0_RATE_LIMITER = RateLimiter(times=6000, minutes=1)
@@ -61,15 +63,9 @@ APM = AudioPeerManager(CONFIG.WEBRTC_TIMEOUT)
 # ---------------------------
 # Setup db
 # ---------------------------
-# This will create the database and the collections if they do not exist
-Role.db_create_collection(System)
-User.db_create_collection(System)
-APIKey.db_create_collection(System)
-
-# Create default roles
-if not Role.db_find_by_rolename(System, "boss"):
-    boss_role = Role.new(
-        db_connection=System,
+# Create default boss role if it doesn't exist
+if not Role.objects(rolename="boss").first(): # type: ignore[attr-defined]
+    boss_role = Role(
         rolename="boss",
         api_endpoints=[
             Endpoint(
@@ -78,19 +74,21 @@ if not Role.db_find_by_rolename(System, "boss"):
             )
         ]
     )
+    print(boss_role.to_mongo())
+    boss_role.save()
 
-BOSE_ROLE = Role.db_find_by_rolename(System, "boss")
+BOSE_ROLE = Role.objects(rolename="boss").first() # type: ignore[attr-defined]
 if BOSE_ROLE is None:
-    raise Exception("Boss role not found. Pls reinitialize the database.")
+    raise Exception("Boss role not found. Please reinitialize the database.")
 
-# create a boss user
-if not User.db_find_by_username(System, "boss"):
-    User.new(
-        db_connection=System,
+# create a boss user if it doesn't exist
+if not User.objects(username="boss").first(): # type: ignore[attr-defined]
+    boss_user = User(
         username="boss",
-        password="boss",
-        roles_id=[BOSE_ROLE._id]
+        roles=[BOSE_ROLE]
     )
+    boss_user.set_password("boss")
+    boss_user.save()
 
 
 
@@ -121,20 +119,23 @@ async def rate_limit_exceeded_callback(request: Request, response: Response, pex
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Connect to Redis
     redis_connection = redis.from_url(CONFIG.REDIS_URL, encoding="utf8", decode_responses=True)
     await FastAPILimiter.init(
         redis_connection,
         identifier=service_name_identifier,
         http_callback=rate_limit_exceeded_callback,
-        )
-    
+    )
+
     # Check for timeouts for WebRTC connections
     asyncio.create_task(APM.check_timeouts())
 
     try:
         yield
     finally:
-        System.close()
+        # Disconnect from MongoDB
+        disconnect()
+        # Close Redis connection
         await FastAPILimiter.close()
 
 app = FastAPI(
@@ -227,55 +228,35 @@ def compare_roles(
 
 def get_user_roles_by_session(session: Union[SessionUser, SessionAPIKey]) -> List[Role]:
     if isinstance(session, SessionUser):
-        # get the current users roles
-        user = User.db_find_by_id(System, session.user_id)
+        user = User.objects(id=session.user_id).first() # type: ignore[attr-defined]
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
-        roles: List[Role] = []
-        for role_id in user.roles:
-            role_obj = Role.db_find_by_id(System, role_id)
-            if role_obj is None:
-                raise HTTPException(status_code=404, detail="Role not found")
-            roles.append(role_obj)
-        
-        return roles
+        return user.roles
     elif isinstance(session, SessionAPIKey):
-        # get the current apikey roles
-        api_key = APIKey.db_find_by_id(System, session.apikey_id)
+        api_key = ApiKey.objects(id=session.apikey_id).first() # type: ignore[attr-defined]
         if api_key is None:
-            raise HTTPException(status_code=404, detail="APIKey not found")
-        roles_api: List[Role] = []
-        for role_id in api_key.roles:
-            role_obj = Role.db_find_by_id(System, role_id)
-            if role_obj is None:
-                raise HTTPException(status_code=404, detail="Role not found")
-            roles_api.append(role_obj)
-        
-        return roles_api
+            raise HTTPException(status_code=404, detail="ApiKey not found")
+        return api_key.roles
 
-def get_user_or_apikey_from_session(session: Session) -> Union[User, APIKey]:
-    
-    logger.debug(f"Session of type {session.__class__.__name__} for token: {session._id}")
+def get_user_or_apikey_from_session(session: Session) -> Union[User, ApiKey]:
+    """Retrieves a User or ApiKey object from a session."""
+    logger.debug(f"Session of type {session.__class__.__name__} for token: {session.id}")
 
     if isinstance(session, SessionUser):
-        # get user
-        user_id = session.user_id
-        user = User.db_find_by_id(System, user_id)
-        if user is None:
-            logger.error(f"User {user_id} not found for token: {session._id}")
+        user = User.objects(id=session.user_id).first() # type: ignore[attr-defined]
+        if not user:
+            logger.error(f"User {session.user_id} not found for token: {session.id}")
             raise HTTPException(status_code=403, detail="Invalid authentication token")
         return user
     elif isinstance(session, SessionAPIKey):
-        # get api key
-        api_key_id = session.apikey_id
-        api_key = APIKey.db_find_by_id(System, api_key_id)
-        if api_key is None:
-            logger.error(f"APIKey {api_key_id} not found for token: {session._id}")
+        api_key = ApiKey.objects(id=session.apikey_id).first() # type: ignore[attr-defined]
+        if not api_key:
+            logger.error(f"ApiKey {session.apikey_id} not found for token: {session.id}")
             raise HTTPException(status_code=403, detail="Invalid authentication token")
         return api_key
     else:
-        logger.error(f"Session type {session.__class__.__name__} not supported for token: {session._id}")
-        raise HTTPException(status_code=403, detail="Invalid authentication token. Only User and APIKey sessions are supported.")
+        logger.error(f"Unsupported session type: {session.__class__.__name__}")
+        raise HTTPException(status_code=403, detail="Invalid authentication token")
 
 # get session from token
 def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Request, HTTPAuthorizationCredentials], Awaitable[Union[SessionUser, SessionAPIKey]]]:
@@ -295,23 +276,19 @@ def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Req
 
         # check if the session is of a supported type
         if not isinstance(session, (SessionUser, SessionAPIKey)):
-            logger.error(f"Session type {session.__class__.__name__} not supported for token: {session._id}")
+            logger.error(f"Session type {session.__class__.__name__} not supported for token: {session.id}")
             raise HTTPException(status_code=403, detail="Invalid authentication token")
 
         # get user
         user_or_apikey = get_user_or_apikey_from_session(session)
         
         # check if apikey is expired
-        if isinstance(user_or_apikey, APIKey):
+        if isinstance(user_or_apikey, ApiKey):
             if user_or_apikey.is_expired():
-                logger.error(f"APIKey {user_or_apikey._id} is expired for token: {session._id}")
+                logger.error(f"ApiKey {user_or_apikey.id} is expired for token: {session.id}")
                 raise HTTPException(status_code=403, detail="Invalid authentication token")
 
-        role_ids = user_or_apikey.roles
-
-        # Fetch all roles from the database.
-        roles_db = Role.db_find_all(System)
-        roles = [user_role for user_role in roles_db.values() if user_role._id in role_ids]
+        roles = user_or_apikey.roles
 
         roles_names = [role.rolename for role in roles]
         
@@ -328,7 +305,7 @@ def auth(required_roles: Optional[List[Optional[Role]]] = None) -> Callable[[Req
 
 
         # Build a list of Role objects corresponding to the user's roles.
-        roles_list = [role_obj for role_id, role_obj in roles_db.items() if role_id in role_ids]
+        roles_list = [role for role in roles if role.rolename in roles_names]
 
         # Check if any of the user's roles permit access to the requested endpoint.
         for role_obj in roles_list:
@@ -358,16 +335,16 @@ def no_auth() -> Callable[[Request, HTTPAuthorizationCredentials], Awaitable[Uni
 
         # check if the session is of a supported type
         if not isinstance(session, (SessionUser, SessionAPIKey)):
-            logger.error(f"Session type {session.__class__.__name__} not supported for token: {session._id}")
-            raise HTTPException(status_code=403, detail="Invalid authentication token. Only User and APIKey sessions are supported.")
+            logger.error(f"Session type {session.__class__.__name__} not supported for token: {session.id}")
+            raise HTTPException(status_code=403, detail="Invalid authentication token. Only User and ApiKey sessions are supported.")
 
         # get user
         user_or_apikey = get_user_or_apikey_from_session(session)
 
         # check if apikey is expired
-        if isinstance(user_or_apikey, APIKey):
+        if isinstance(user_or_apikey, ApiKey):
             if user_or_apikey.is_expired():
-                logger.error(f"APIKey {user_or_apikey._id} is expired for token: {session._id}")
+                logger.error(f"ApiKey {user_or_apikey.id} is expired for token: {session.id}")
                 raise HTTPException(status_code=403, detail="Invalid authentication token")
 
         return session
@@ -423,57 +400,44 @@ class AuthWebRTCResponse(BaseModel):
     description="Authenticate a user with a username and password. Creates a new session token and returns detailed session information."
 )
 async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKeyResponse]:
-    """Authenticate a user and create a new session token."""
-    if auth.type == "user" and auth.username is not None and auth.password is not None:
-        try:
-            session, user = await SM.login(System, auth.username, auth.password)
-        except Exception as e:
-            logger.error(f"Error during APIKey login: {str(e)}")
-            if str(e) == "User not found":
-                raise HTTPException(status_code=404, detail="Invalid authentication token")
-            elif str(e) == "Incorrect password":
-                raise HTTPException(status_code=403, detail="Invalid authentication token")
-            else:
-                raise e
-        
+    """Authenticate a user or API key and create a new session token."""
+    if auth.type == "user" and auth.username and auth.password:
+        session, user = await SM.login(auth.username, auth.password)
+
+        user.last_login = datetime.now(timezone.utc)
+        user.save()
+
         return AuthUserResponse(
-            token=session._id,
+            token=session.id,
             session_type="user",
             creation_date=session.creation_date,
             expiration_date=session.expiration_date,
             user=AuthUser(
-                id=user._id,
+                id=str(user.id),
                 username=user.username,
                 last_login=user.last_login,
-                roles=user.roles
-            )
+                roles=[str(role.id) for role in user.roles],
+            ),
         )
-    elif auth.type == "apikey" and auth.key is not None:
-        try:
-            session_api, apikey = await SM.login_apikey(System, auth.key)
-        except Exception as e:
-            logger.error(f"Error during APIKey login: {str(e)}")
-            if str(e) == "API key not found":
-                raise HTTPException(status_code=404, detail="Invalid authentication token")
-            elif str(e) == "Owner of API key not found":
-                raise HTTPException(status_code=403, detail="Invalid authentication token")
-            else:
-                raise e
+
+    elif auth.type == "apikey" and auth.key:
+        session_apikey, apikey = await SM.login_apikey(auth.key)
 
         return AuthAPIKeyResponse(
-            token=session_api._id,
+            token=session_apikey.id,
             session_type="apikey",
-            creation_date=session_api.creation_date,
-            expiration_date=session_api.expiration_date,
+            creation_date=session_apikey.creation_date,
+            expiration_date=session_apikey.expiration_date,
             api_key=AuthAPIKey(
-                id=apikey._id,
-                roles=apikey.roles,
+                id=str(apikey.id),
+                roles=[str(role.id) for role in apikey.roles],
                 created_at=apikey.created_at,
-                expiration=apikey.expiration
-            )
+                expiration=apikey.expiration,
+            ),
         )
+
     else:
-        raise HTTPException(status_code=400, detail="Invalid authentication type. Must be 'user' or 'apikey'.")
+        raise HTTPException(status_code=400, detail="Invalid authentication type or missing credentials.")
 
 
 @app.get(
@@ -482,36 +446,35 @@ async def api_auth_login(auth: AuthRequest) -> Union[AuthUserResponse, AuthAPIKe
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Return the current authentication sessions details, including token and user information."
 )
-async def api_auth_status(session: Union[SessionUser, SessionAPIKey]= Depends(no_auth())) -> Union[AuthUserResponse, AuthAPIKeyResponse]:
+async def api_auth_status(session: Union[SessionUser, SessionAPIKey] = Depends(no_auth())) -> Union[AuthUserResponse, AuthAPIKeyResponse]:
     """Check the current authentication session status."""
-
-    # get user
     user_or_apikey = get_user_or_apikey_from_session(session)
+
     if isinstance(user_or_apikey, User):
         return AuthUserResponse(
-            token=session._id,
+            token=session.id,
             session_type="user",
             creation_date=session.creation_date,
             expiration_date=session.expiration_date,
             user=AuthUser(
-                id=user_or_apikey._id,
+                id=str(user_or_apikey.id),
                 username=user_or_apikey.username,
-                roles=user_or_apikey.roles,
-                last_login=user_or_apikey.last_login
-            )
+                roles=[str(role.id) for role in user_or_apikey.roles],
+                last_login=user_or_apikey.last_login,
+            ),
         )
-    elif isinstance(user_or_apikey, APIKey):
+    elif isinstance(user_or_apikey, ApiKey):
         return AuthAPIKeyResponse(
-            token=session._id,
+            token=session.id,
             session_type="apikey",
             creation_date=session.creation_date,
             expiration_date=session.expiration_date,
             api_key=AuthAPIKey(
-                id=user_or_apikey._id,
-                roles=user_or_apikey.roles,
+                id=str(user_or_apikey.id),
+                roles=[str(role.id) for role in user_or_apikey.roles],
                 created_at=user_or_apikey.created_at,
-                expiration=user_or_apikey.expiration
-            )
+                expiration=user_or_apikey.expiration,
+            ),
         )
 
 # Logout model
@@ -538,50 +501,56 @@ class AuthSessionResponse(BaseModel):
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="For administrative users: Retrieve a list of all active sessions with detailed session information."
 )
-async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> AuthSessionResponse:
+async def api_auth_sessions(session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> AuthSessionResponse:
+    """For administrative users: Retrieve a list of all active sessions with detailed session information."""
     sessions = await SM.get_sessions()
     return_sessions: List[Union[AuthUserResponse, AuthAPIKeyResponse, AuthWebRTCResponse]] = []
     for s in sessions.values():
-        # get user or apikey
         if isinstance(s, (SessionUser, SessionAPIKey)):
             try:
                 user_or_apikey = get_user_or_apikey_from_session(s)
-            except HTTPException as e:
-                continue
+            except HTTPException:
+                continue  # Skip sessions with missing users/apikeys
 
             if isinstance(user_or_apikey, User):
-                return_sessions.append(AuthUserResponse(
-                    token=s._id,
-                    session_type="user",
-                    creation_date=s.creation_date,
-                    expiration_date=s.expiration_date,
-                    user=AuthUser(
-                        id=user_or_apikey._id,
-                        username=user_or_apikey.username,
-                        roles=user_or_apikey.roles,
-                        last_login=user_or_apikey.last_login
+                return_sessions.append(
+                    AuthUserResponse(
+                        token=s.id,
+                        session_type="user",
+                        creation_date=s.creation_date,
+                        expiration_date=s.expiration_date,
+                        user=AuthUser(
+                            id=str(user_or_apikey.id),
+                            username=user_or_apikey.username,
+                            roles=[str(role.id) for role in user_or_apikey.roles],
+                            last_login=user_or_apikey.last_login,
+                        ),
                     )
-                ))
-            elif isinstance(user_or_apikey, APIKey):
-                return_sessions.append(AuthAPIKeyResponse(
-                    token=s._id,
-                    session_type="apikey",
-                    creation_date=s.creation_date,
-                    expiration_date=s.expiration_date,
-                    api_key=AuthAPIKey(
-                        id=user_or_apikey._id,
-                        roles=user_or_apikey.roles,
-                        created_at=user_or_apikey.created_at,
-                        expiration=user_or_apikey.expiration
+                )
+            elif isinstance(user_or_apikey, ApiKey):
+                return_sessions.append(
+                    AuthAPIKeyResponse(
+                        token=s.id,
+                        session_type="apikey",
+                        creation_date=s.creation_date,
+                        expiration_date=s.expiration_date,
+                        api_key=AuthAPIKey(
+                            id=str(user_or_apikey.id),
+                            roles=[str(role.id) for role in user_or_apikey.roles],
+                            created_at=user_or_apikey.created_at,
+                            expiration=user_or_apikey.expiration,
+                        ),
                     )
-                ))
+                )
         elif isinstance(s, SessionWebRTC):
-            return_sessions.append(AuthWebRTCResponse(
-                token=s.id,
-                session_type="webrtc",
-                creation_date=s.creation_date,
-                expiration_date=s.expiration_date
-            ))
+            return_sessions.append(
+                AuthWebRTCResponse(
+                    token=s.id,
+                    session_type="webrtc",
+                    creation_date=s.creation_date,
+                    expiration_date=s.expiration_date,
+                )
+            )
 
     return AuthSessionResponse(sessions=return_sessions)
 
@@ -635,17 +604,21 @@ class RolePutRequest(BaseModel):
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all roles in the system."
 )
-async def api_roles(session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> List[RoleResponse]:
+async def api_roles(session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> List[RoleResponse]:
     """List all roles in the system."""
-    roles = Role.db_find_all(System)
-    return_roles: List[RoleResponse] = []
-    for r in roles.values():
-        return_roles.append(RoleResponse(
-            id=r._id,
+    roles = Role.objects() # type: ignore[attr-defined]
+    return [
+        RoleResponse(
+            id=str(r.id),
             rolename=r.rolename,
-            endpoints=[EndpointResponse(method=MethodResponse(e.method.value), path_filter=e.path_filter) for e in r.api_endpoints]
-        ))
-    return return_roles
+            endpoints=[
+                EndpointResponse(
+                    method=MethodResponse(e.method.value), 
+                    path_filter=e.path_filter
+                ) for e in r.api_endpoints
+            ]
+        ) for r in roles
+    ]
 
 @app.get(
     "/api/v1/role/{role_id}",
@@ -655,12 +628,12 @@ async def api_roles(session: Union[SessionUser, SessionAPIKey]= Depends(auth([BO
 )
 async def api_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> RoleResponse:
     """Get a specific role by its ID."""
-    role = Role.db_find_by_id(System, role_id)
+    role = Role.objects(id=role_id).first() # type: ignore[attr-defined]
     if role is None:
         raise HTTPException(status_code=404, detail="Role not found")
     
     return RoleResponse(
-        id=role._id,
+        id=role.id,
         rolename=role.rolename,
         endpoints=[EndpointResponse(method=MethodResponse(e.method.value), path_filter=e.path_filter) for e in role.api_endpoints]
     )
@@ -671,39 +644,29 @@ async def api_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Dep
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Create a new role with specified endpoints."
 )
-async def api_create_role(role: RoleCreateRequest, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> RoleResponse:
+async def api_create_role(role: RoleCreateRequest, session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
     """Create a new role with specified endpoints."""
-    roles = get_user_roles_by_session(session)
+    user_roles = get_user_roles_by_session(session)
 
-    # check if path_filter is valid. It should not contain any regex special characters
     if role.endpoints is not None:
         for e in role.endpoints:
             if not re.fullmatch(r"[\w\-*/]+", e.path_filter):
                 raise HTTPException(status_code=400, detail="Invalid path filter. Only alphanumeric characters, '-', '*', and '/' are allowed.")
 
-    # Convert the incoming endpoints to Endpoint objects
     endpoints = [Endpoint(method=Method(e.method), path_filter=e.path_filter) for e in role.endpoints] if role.endpoints else []
 
-    # Check if the role already exists
-    existing_role = Role.db_find_by_rolename(System, role.rolename)
-    if existing_role is not None:
+    if Role.objects(rolename=role.rolename).first(): # type: ignore[attr-defined]
         raise HTTPException(status_code=400, detail="Role already exists")
 
-    # Create the new role
-    new_role = Role(
-        rolename=role.rolename,
-        api_endpoints=endpoints
-    )
+    new_role = Role(rolename=role.rolename, api_endpoints=endpoints)
 
-    # Check if the new role is broader than the user's roles
-    if not compare_roles(roles, new_role):
+    if not compare_roles(user_roles, new_role):
         raise HTTPException(status_code=403, detail="You do not have permission to create this role. The new role has more permissions than your current roles.")
-    
-    # Save the new role to the database
-    new_role.db_save(System)
+
+    new_role.save()
 
     return RoleResponse(
-        id=new_role._id,
+        id=str(new_role.id),
         rolename=new_role.rolename,
         endpoints=[EndpointResponse(method=MethodResponse(e.method.value), path_filter=e.path_filter) for e in new_role.api_endpoints]
     )
@@ -714,30 +677,18 @@ async def api_create_role(role: RoleCreateRequest, session: Union[SessionUser, S
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Delete a specific role by its ID."
 )
-async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> OK:
+async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> OK:
     """Delete a specific role by its ID."""
-    role = Role.db_find_by_id(System, role_id)
+    role = Role.objects(id=role_id).first() # type: ignore[attr-defined]
     if role is None:
         raise HTTPException(status_code=404, detail="Role not found")
-    
-    # Check if the role is in use by any user
-    # Remove the role from all users
-    users = User.db_find_all(System)
-    for user in users.values():
-        if role._id in user.roles:
-            user.roles.remove(role._id)
-            user.db_save(System)
-    
-    # Check if the role is in use by any API key
-    # Remove the role from all API keys
-    apikeys = APIKey.db_find_all(System)
-    for apikey in apikeys:
-        if role._id in apikey.roles:
-            apikey.roles.remove(role._id)
-            apikey.db_save(System)
+
+    # Remove the role from all users and API keys that have it
+    User.objects(roles=role).update(pull__roles=role) # type: ignore[attr-defined]
+    ApiKey.objects(roles=role).update(pull__roles=role) # type: ignore[attr-defined]
 
     # Delete the role
-    Role.db_delete_by_id(System, role_id)
+    role.delete()
 
     return OK(ok=True)
 
@@ -747,24 +698,22 @@ async def api_delete_role(role_id: str, session: Union[SessionUser, SessionAPIKe
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="Update a specific role by its ID."
 )
-async def api_update_role(role_id: str, role: RolePutRequest, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> RoleResponse:
+async def api_update_role(role_id: str, role: RolePutRequest, session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> RoleResponse:
     """Update a specific role by its ID."""
-    # Convert the incoming endpoints to Endpoint objects
-    endpoints = [Endpoint(method=Method(e.method), path_filter=e.path_filter) for e in role.endpoints] if role.endpoints else []
-
-    # Find role by ID
-    existing_role = Role.db_find_by_id(System, role_id)
+    existing_role = Role.objects(id=role_id).first() # type: ignore[attr-defined]
     if existing_role is None:
         raise HTTPException(status_code=404, detail="Role not found")
-    
-    # Update the role
+
     if role.rolename is not None:
         existing_role.rolename = role.rolename
     if role.endpoints is not None:
+        endpoints = [Endpoint(method=Method(e.method), path_filter=e.path_filter) for e in role.endpoints]
         existing_role.api_endpoints = endpoints
-    existing_role.db_update(System)
+
+    existing_role.save()
+
     return RoleResponse(
-        id=existing_role._id,
+        id=str(existing_role.id),
         rolename=existing_role.rolename,
         endpoints=[EndpointResponse(method=MethodResponse(e.method.value), path_filter=e.path_filter) for e in existing_role.api_endpoints]
     )
@@ -786,18 +735,18 @@ class UserResponse(BaseModel):
     dependencies=[Depends(LVL2_RATE_LIMITER)],
     description="List all users in the system."
 )
-async def api_users(session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))) -> List[UserResponse]:
+async def api_users(session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))) -> List[UserResponse]:
     """List all users in the system."""
-    users = User.db_find_all(System)
-    return_users: List[UserResponse] = []
-    for u in users.values():
-        return_users.append(UserResponse(
-            id=u._id,
+    users = User.objects() # type: ignore[attr-defined]
+    return [
+        UserResponse(
+            id=str(u.id),
             username=u.username,
-            roles=u.roles,
-            last_login=u.last_login
-        ))
-    return return_users
+            roles=[str(role.id) for role in u.roles],
+            last_login=u.last_login,
+        )
+        for u in users
+    ]
 
 # create a user
 class UserCreate(BaseModel):
@@ -813,45 +762,35 @@ class UserCreate(BaseModel):
 )
 async def api_create_user(
     user: UserCreate,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Create a new user in the system."""
-    # check if the user already exists
-    existing_user = User.db_find_by_username(System, user.username)
-    if existing_user is not None:
+    if User.objects(username=user.username).first(): # type: ignore[attr-defined]
         raise HTTPException(status_code=400, detail="User already exists")
 
-    user_roles = user.roles if user.roles else []
+    # Validate roles
+    roles = []
+    if user.roles:
+        roles = Role.objects(id__in=user.roles) # type: ignore[attr-defined]
+        if len(roles) != len(user.roles):
+            raise HTTPException(status_code=400, detail="One or more roles do not exist")
 
-    # get the roles obj
-    roles: List[Role] = []
-    for role_id in user_roles:
-        role_obj = Role.db_find_by_id(System, role_id)
-        if role_obj is None:
-            raise HTTPException(status_code=404, detail=f"Role {role_id} not found")
-        roles.append(role_obj)
-    
-    # Check if the new role is broader than the user's roles
+    # Check if the new roles are broader than the user's roles
     req_user_roles = get_user_roles_by_session(session)
     for r in roles:
         if not compare_roles(req_user_roles, r):
             raise HTTPException(status_code=403, detail="You do not have permission to create this user. The new user has more permissions than your current roles.")
 
-    try:
-        new_user = User.new(
-            db_connection=System,
-            username=user.username,
-            password=user.password,
-            roles_id=user.roles
-        )
-        return UserResponse(
-            id=new_user._id,
-            username=new_user.username,
-            roles=new_user.roles,
-            last_login=new_user.last_login
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    new_user = User(username=user.username, roles=roles)
+    new_user.set_password(user.password)
+    new_user.save()
+
+    return UserResponse(
+        id=str(new_user.id),
+        username=new_user.username,
+        roles=[str(role.id) for role in new_user.roles],
+        last_login=new_user.last_login,
+    )
 
 # update user password
 class UserUpdatePassword(BaseModel):
@@ -866,39 +805,31 @@ class UserUpdatePassword(BaseModel):
 )
 async def api_change_user_password(
     password_update: UserUpdatePassword,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Update password for the current user."""
-    # check if the session is called by an apikey
     if isinstance(session, SessionAPIKey):
-        raise HTTPException(status_code=403, detail="You cannot change the password using an API key session. Please use a user session.")
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot change the password using an API key session. Please use a user session.",
+        )
 
-    # Get the current user
-    user = User.db_find_by_id(System, session.user_id)
+    user = User.objects(id=session.user_id).first() # type: ignore[attr-defined]
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Verify current password
     if not user.verify_password(password_update.current_password):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-    try:
-        # Generate new password hash and salt
-        password_hash, password_salt = User.hash_password(password_update.new_password)
-        
-        # Update user's password in database
-        user.password_hash = password_hash
-        user.password_salt = password_salt
-        user.db_update(System)
+    user.set_password(password_update.new_password)
+    user.save()
 
-        return UserResponse(
-            id=user._id,
-            username=user.username,
-            roles=user.roles,
-            last_login=user.last_login
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return UserResponse(
+        id=str(user.id),
+        username=user.username,
+        roles=[str(role.id) for role in user.roles],
+        last_login=user.last_login,
+    )
 
 class UserResetPassword(BaseModel):
     new_password: str
@@ -912,30 +843,22 @@ class UserResetPassword(BaseModel):
 async def api_reset_user_password(
     user_id: str,
     pw: UserResetPassword,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Reset the user password."""
-    user = User.db_find_by_id(System, user_id)
+    user = User.objects(id=user_id).first() # type: ignore[attr-defined]
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    try:
-        # Generate new password hash and salt
-        password_hash, password_salt = User.hash_password(pw.new_password)
+    user.set_password(pw.new_password)
+    user.save()
 
-        # Update user's password in database
-        user.password_hash = password_hash
-        user.password_salt = password_salt
-        user.db_update(System)
-
-        return UserResponse(
-            id=user._id,
-            username=user.username,
-            roles=user.roles,
-            last_login=user.last_login
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return UserResponse(
+        id=str(user.id),
+        username=user.username,
+        roles=[str(role.id) for role in user.roles],
+        last_login=user.last_login,
+    )
 
 class UserSetRole(BaseModel):
     roles: List[str]
@@ -949,32 +872,28 @@ class UserSetRole(BaseModel):
 async def api_set_user_roles(
     user_id: str,
     user_roles: UserSetRole,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> UserResponse:
     """Set roles for a user. Only accessible by admin."""
-    user = User.db_find_by_id(System, user_id)
+    user = User.objects(id=user_id).first() # type: ignore[attr-defined]
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    try:
-        # Verify all roles exist
-        db_roles = Role.db_find_all(System)
-        for role_id in user_roles.roles:
-            if role_id not in [r for r in db_roles]:
-                raise HTTPException(status_code=400, detail=f"Role '{role_id}' does not exist")
+    # Verify all roles exist
+    roles = Role.objects(id__in=user_roles.roles) # type: ignore[attr-defined]
+    if len(roles) != len(user_roles.roles):
+        raise HTTPException(status_code=400, detail="One or more roles do not exist")
 
-        # Update user's roles
-        user.roles = user_roles.roles
-        user.db_update(System)
+    # Update user's roles
+    user.roles = roles
+    user.save()
 
-        return UserResponse(
-            id=user._id,
-            username=user.username,
-            roles=user.roles,
-            last_login=user.last_login
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return UserResponse(
+        id=str(user.id),
+        username=user.username,
+        roles=[str(role.id) for role in user.roles],
+        last_login=user.last_login
+    )
 
 @app.delete(
     "/api/v1/user/{user_id}",
@@ -984,38 +903,30 @@ async def api_set_user_roles(
 )
 async def api_delete_user(
     user_id: str,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> OK:
     """Delete a user. Only accessible by admin."""
-    user = User.db_find_by_id(System, user_id)
+    user = User.objects(id=user_id).first() # type: ignore[attr-defined]
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # get all API keys for the user, logout and delete them
-    user_api_keys = user.api_keys_ids
-    for ak in user_api_keys:
-        # logout all sessions for the API key
-        user_api_key_session = await SM.get_sessions_by_apikey(ak)
-        for ak_session in user_api_key_session:
-            # delete the session
-            await ak_session.logout()
+    # Logout and delete all sessions for the user's API keys
+    if user.api_keys:
+        for api_key in user.api_keys:
+            api_key_sessions = await SM.get_sessions_by_apikey(str(api_key.id))
+            for ak_session in api_key_sessions:
+                await ak_session.logout()
 
-        # delete the API key
-        ak_obj = APIKey.db_find_by_id(System, ak)
-        if ak_obj is not None:
-            ak_obj.db_delete(System)
-
-    # get all sessions for the user and logout
+    # Logout all sessions for the user
     user_sessions = await SM.get_sessions_by_user(user_id)
     for us in user_sessions:
-        # delete the session
         await us.logout()
 
-    try:
-        user.db_delete(System)
-        return OK(ok=True)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Deleting the user will also delete all associated API keys
+    # due to the reverse_delete_rule=CASCADE on the ApiKey.user field.
+    user.delete()
+
+    return OK(ok=True)
 
 
 
@@ -1045,168 +956,301 @@ class APIKeyPutRequest(BaseModel):
     expiration: Optional[datetime] = None
 
 def _list_apikeys(user_id: str) -> List[APIKeyResponse]:
-    user_obj = User.db_find_by_id(System, user_id)
-    if user_obj is None:
+    user = User.objects(id=user_id).first() # type: ignore[attr-defined]
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     return [
         APIKeyResponse(
-            id=apikey._id,
-            roles=apikey.roles,
-            created_at=apikey.created_at,
-            expiration=apikey.expiration,
+            id=str(api_key.id),
+            roles=[str(role.id) for role in api_key.roles],
+            created_at=api_key.created_at,
+            expiration=api_key.expiration,
         )
-        for apikey_id in user_obj.api_keys_ids
-        if (apikey := APIKey.db_find_by_id(System, apikey_id)) is not None
+        for api_key in user.api_keys
     ]
 
 
 def _get_apikey(user_id: str, apikey_id: str) -> APIKeyResponse:
-    user_obj = User.db_find_by_id(System, user_id)
-    if user_obj is None:
+    user = User.objects(id=user_id).first() # type: ignore[attr-defined]
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if apikey_id not in user_obj.api_keys_ids:
-        raise HTTPException(
-            status_code=403, detail="API key does not belong to the user"
-        )
-
-    apikey = APIKey.db_find_by_id(System, apikey_id)
-    if apikey is None:
+    api_key = ApiKey.objects(id=apikey_id).first() # type: ignore[attr-defined]
+    if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
 
+    if api_key.user != user:
+        raise HTTPException(status_code=403, detail="API key does not belong to the user")
+
     return APIKeyResponse(
-        id=apikey._id,
-        roles=apikey.roles,
-        created_at=apikey.created_at,
-        expiration=apikey.expiration,
+        id=str(api_key.id),
+        roles=[str(role.id) for role in api_key.roles],
+        created_at=api_key.created_at,
+        expiration=api_key.expiration,
     )
 
 
 def _create_apikey(session: Union[SessionUser, SessionAPIKey], user_id: str, req: APIKeyCreateRequest) -> APIKeyCreateResponse:
-    # check if expiration date is in the past
-    now = datetime.now(timezone.utc)
-    if req.expiration is not None and req.expiration < now:
-        raise HTTPException(status_code=400, detail="Expiration date cannot be in the past")
-
-    user_obj = User.db_find_by_id(System, user_id)
-    if user_obj is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # get the roles obj
-    roles: List[Role] = []
-    for role_id in req.roles:
-        role_obj = Role.db_find_by_id(System, role_id)
-        if role_obj is None:
-            raise HTTPException(status_code=404, detail=f"Role {role_id} not found")
-        roles.append(role_obj)
-
-    # Check if the new role is broader than the user's roles
-    req_user_roles = get_user_roles_by_session(session)
-    for r in roles:
-        if not compare_roles(req_user_roles, r):
-            raise HTTPException(status_code=403, detail="You do not have permission to create this api key with this roles. The roles you assigned are broader than your current roles.")
-
-    new_key, api_key = APIKey.new(
-        user_id=user_id,
-        db_connection=System,
-        expiration=req.expiration,
-        roles=req.roles,
-    )
-
+    """Helper function to create a new API key for a user.
+    
+    Args:
+        session: The current user session
+        user_id: The ID of the user to create the API key for
+        req: The API key creation request
+        
+    Returns:
+        APIKeyCreateResponse with the new API key details
+        
+    Raises:
+        HTTPException: If validation fails or an error occurs
+    """
     try:
-        user_obj.api_keys_ids.append(new_key._id)
-        user_obj.db_update(System)
-        new_key.db_save(System)
-    except Exception:
-        # roll back user change if the key save fails
-        if new_key._id in user_obj.api_keys_ids:
-            user_obj.api_keys_ids.remove(new_key._id)
-            user_obj.db_update(System)
-        raise HTTPException(status_code=500, detail="Failed to create API key")
+        # Check if expiration date is in the past
+        now = datetime.now(timezone.utc)
+        if req.expiration is not None and req.expiration < now:
+            raise HTTPException(
+                status_code=400, 
+                detail="Expiration date cannot be in the past"
+            )
 
-    return APIKeyCreateResponse(
-        id=new_key._id,
-        key=api_key,
-        roles=new_key.roles,
-        created_at=new_key.created_at,
-        expiration=new_key.expiration,
-    )
+        # Get the user
+        user_obj = User.objects(id=user_id).first()  # type: ignore[attr-defined]
+        if user_obj is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Validate roles
+        roles = []
+        if req.roles:
+            roles = list(Role.objects(id__in=req.roles))  # type: ignore[attr-defined]
+            if len(roles) != len(req.roles):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="One or more roles do not exist"
+                )
+
+        # Check if the new roles are broader than the user's roles
+        req_user_roles = get_user_roles_by_session(session)
+        for r in roles:
+            if not compare_roles(req_user_roles, r):
+                raise HTTPException(
+                    status_code=403, 
+                    detail=(
+                        "You do not have permission to create an API key with these roles. "
+                        "The roles you assigned are broader than your current roles."
+                    )
+                )
+
+        # Create the new API key
+        api_key, raw_key = ApiKey.create_key(
+            user=user_obj, 
+            roles=roles, 
+            expiration=req.expiration
+        )
+
+        # Add the new key to the user's list of keys and save
+        user_obj.api_keys.append(api_key)
+        user_obj.save()
+
+        # Log the creation (without exposing the raw key)
+        logger.info(f"Created API key {api_key.id} for user {user_id}")
+
+        return APIKeyCreateResponse(
+            id=str(api_key.id),
+            key=raw_key,  # This is the only time the raw key is exposed
+            roles=[str(role.id) for role in api_key.roles],
+            created_at=api_key.created_at,
+            expiration=api_key.expiration,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating API key for user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail="An error occurred while creating the API key"
+        )
 
 
 def _delete_apikey(user_id: str, apikey_id: str) -> OK:
-    user_obj = User.db_find_by_id(System, user_id)
-    if user_obj is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if apikey_id not in user_obj.api_keys_ids:
-        raise HTTPException(
-            status_code=403, detail="API key does not belong to the user"
-        )
-
-    apikey = APIKey.db_find_by_id(System, apikey_id)
-    if apikey is None:
-        raise HTTPException(status_code=404, detail="API key not found")
-
-    try:
-        user_obj.api_keys_ids.remove(apikey._id)
-        user_obj.db_update(System)
-        apikey.db_delete(System)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to delete API key")
-
-    return OK(ok=True)
-
-
-def _update_apikey(
-    user_id: str, apikey_id: str, req: APIKeyPutRequest
-) -> APIKeyResponse:
-    user_obj = User.db_find_by_id(System, user_id)
-    if user_obj is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if apikey_id not in user_obj.api_keys_ids:
-        raise HTTPException(
-            status_code=403, detail="API key does not belong to the user"
-        )
-
-    apikey_obj = APIKey.db_find_by_id(System, apikey_id)
-    if apikey_obj is None:
-        raise HTTPException(status_code=404, detail="API key not found")
-
-    if req.roles is not None:
-        db_roles = Role.db_find_all(System)
-        for role_id in req.roles:
-            if role_id not in [r for r in db_roles]:
-                raise HTTPException(status_code=400, detail=f"Role '{role_id}' does not exist")
-
-        apikey_obj.roles = req.roles
+    """Helper function to delete an API key.
     
-    if req.expiration is not None:
-        apikey_obj.expiration = req.expiration
-
+    Args:
+        user_id: The ID of the user who owns the API key
+        apikey_id: The ID of the API key to delete
+        
+    Returns:
+        OK response if successful
+        
+    Raises:
+        HTTPException: If the user or API key is not found, or if an error occurs
+    """
     try:
-        apikey_obj.db_update(System)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to update API key")
+        # Get the user
+        user = User.objects(id=user_id).first()  # type: ignore[attr-defined]
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
-    return APIKeyResponse(
-        id=apikey_obj._id,
-        roles=apikey_obj.roles,
-        created_at=apikey_obj.created_at,
-        expiration=apikey_obj.expiration,
-    )
+        # Find the API key to get its details for logging
+        api_key = ApiKey.objects(id=apikey_id).first()  # type: ignore[attr-defined]
+        if not api_key:
+            # The API key doesn't exist at all
+            raise HTTPException(status_code=404, detail="API key not found")
+
+        # Check if the API key belongs to the user
+        if str(api_key.user.id) != user_id:  # type: ignore[attr-defined]
+            raise HTTPException(
+                status_code=403, 
+                detail="API key does not belong to the specified user"
+            )
+
+        # Remove the API key from the user's list
+        initial_count = len(user.api_keys)
+        user.api_keys = [key for key in user.api_keys if str(key.id) != apikey_id]
+        
+        if len(user.api_keys) == initial_count:
+            # The API key wasn't found in the user's list (shouldn't happen due to previous check)
+            raise HTTPException(
+                status_code=404, 
+                detail="API key not associated with this user"
+            )
+        
+        # Save the updated user document
+        user.save()
+
+        # Also delete the API key document from the database
+        ApiKey.objects(id=apikey_id).delete()  # type: ignore[attr-defined]
+        
+        logger.info(f"Deleted API key {apikey_id} for user {user_id}")
+        return OK(ok=True)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting API key {apikey_id} for user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail="An error occurred while deleting the API key"
+        )
+
+
+def _update_apikey(user_id: str, apikey_id: str, req: APIKeyPutRequest) -> APIKeyResponse:
+    """Helper function to update an existing API key.
+    
+    Args:
+        user_id: The ID of the user who owns the API key
+        apikey_id: The ID of the API key to update
+        req: The update request containing new values
+        
+    Returns:
+        APIKeyResponse with the updated API key details
+        
+    Raises:
+        HTTPException: If validation fails or an error occurs
+    """
+    try:
+        # Get the user
+        user = User.objects(id=user_id).first()  # type: ignore[attr-defined]
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Find the API key document (not just the reference in user.api_keys)
+        api_key = ApiKey.objects(id=apikey_id).first()  # type: ignore[attr-defined]
+        if not api_key:
+            raise HTTPException(status_code=404, detail="API key not found")
+            
+        # Verify the API key belongs to the user
+        if str(api_key.user.id) != user_id:  # type: ignore[attr-defined]
+            raise HTTPException(
+                status_code=403, 
+                detail="API key does not belong to the specified user"
+            )
+
+        # Check if the API key is in the user's list (should be, but verify)
+        user_api_key = next((key for key in user.api_keys if str(key.id) == apikey_id), None)
+        if not user_api_key:
+            # This should not happen if the API key exists and belongs to the user
+            raise HTTPException(
+                status_code=404, 
+                detail="API key not associated with this user"
+            )
+
+        # Update roles if provided
+        if req.roles is not None:
+            roles = list(Role.objects(id__in=req.roles))  # type: ignore[attr-defined]
+            if len(roles) != len(req.roles):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="One or more roles do not exist"
+                )
+            api_key.roles = roles
+
+        # Update expiration if provided
+        if req.expiration is not None:
+            # Check if the new expiration is in the past
+            if req.expiration < datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Expiration date cannot be in the past"
+                )
+            api_key.expiration = req.expiration
+
+        # Save the updated API key
+        api_key.updated_at = datetime.now(timezone.utc)
+        api_key.save()
+        
+        # Also update the reference in the user's api_keys list
+        for key in user.api_keys:
+            if str(key.id) == apikey_id:
+                key.roles = api_key.roles
+                key.expiration = api_key.expiration
+                key.updated_at = api_key.updated_at
+                break
+        user.save()
+        
+        logger.info(f"Updated API key {apikey_id} for user {user_id}")
+
+        return APIKeyResponse(
+            id=str(api_key.id),
+            roles=[str(role.id) for role in api_key.roles],
+            created_at=api_key.created_at,
+            expiration=api_key.expiration,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating API key {apikey_id} for user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail="An error occurred while updating the API key"
+        )
 
 
 @app.get(
     "/api/v1/user/{user_id}/apikeys",
     response_model=List[APIKeyResponse],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="List all API keys for a specific user.",
+    description="""List all API keys for a specific user.
+    
+    Requires BOSE_ROLE permission.
+    """,
+    responses={
+        200: {"description": "List of API keys retrieved successfully"},
+        403: {"description": "Insufficient permissions"},
+        404: {"description": "User not found"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_list_apikeys(
-    user_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    user_id: str, 
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> List[APIKeyResponse]:
+    """List all API keys for a specific user.
+    
+    This endpoint allows administrators to list all API keys for any user.
+    """
     return _list_apikeys(user_id)
 
 
@@ -1214,14 +1258,27 @@ async def api_list_apikeys(
     "/api/v1/user/apikeys",
     response_model=List[APIKeyResponse],
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="List all API keys for the authenticated user.",
+    description="""List all API keys for the authenticated user.
+    
+    This endpoint allows users to list their own API keys.
+    Cannot be called using an API key session.
+    """,
+    responses={
+        200: {"description": "List of API keys retrieved successfully"},
+        403: {"description": "Cannot use API key to list API keys"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_list_own_apikeys(
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> List[APIKeyResponse]:
-    # check if the session is called by an apikey
+    """List all API keys for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
-        raise HTTPException(status_code=403, detail="You cannot list the API keys using an API key session. Please use a user session.")
+        logger.warning(f"Attempt to list API keys using API key session: {session.id}")
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot list the API keys using an API key session. Please use a user session."
+        )
 
     return _list_apikeys(session.user_id)
 
@@ -1230,11 +1287,26 @@ async def api_list_own_apikeys(
     "/api/v1/user/{user_id}/apikey/{apikey_id}",
     response_model=APIKeyResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Get a specific API key for a user.",
+    description="""Get a specific API key for a user.
+    
+    Requires BOSE_ROLE permission.
+    """,
+    responses={
+        200: {"description": "API key retrieved successfully"},
+        403: {"description": "Insufficient permissions or API key doesn't belong to user"},
+        404: {"description": "User or API key not found"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_get_apikey(
-    user_id: str, apikey_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    user_id: str, 
+    apikey_id: str, 
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> APIKeyResponse:
+    """Get a specific API key for a user.
+    
+    This endpoint allows administrators to get any user's API key by ID.
+    """
     return _get_apikey(user_id, apikey_id)
 
 
@@ -1242,14 +1314,29 @@ async def api_get_apikey(
     "/api/v1/user/apikey/{apikey_id}",
     response_model=APIKeyResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Get one of *your* API keys (user_id from session).",
+    description="""Get one of your own API keys.
+    
+    This endpoint allows users to get their own API key by ID.
+    Cannot be called using an API key session.
+    """,
+    responses={
+        200: {"description": "API key retrieved successfully"},
+        403: {"description": "Cannot use API key to get API key details"},
+        404: {"description": "API key not found"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_get_own_apikey(
-    apikey_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    apikey_id: str, 
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> APIKeyResponse:
-    # check if the session is called by an apikey
+    """Get a specific API key for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
-        raise HTTPException(status_code=403, detail="You cannot get the API key using an API key session. Please use a user session.")
+        logger.warning(f"Attempt to get API key using API key session: {session.id}")
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot get an API key using an API key session. Please use a user session."
+        )
 
     return _get_apikey(session.user_id, apikey_id)
 
@@ -1258,13 +1345,27 @@ async def api_get_own_apikey(
     "/api/v1/user/{user_id}/apikey",
     response_model=APIKeyCreateResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Create a new API key for a specific user.",
+    description="""Create a new API key for a specific user.
+    
+    Requires BOSE_ROLE permission.
+    """,
+    responses={
+        200: {"description": "API key created successfully"},
+        400: {"description": "Invalid input (e.g., expiration in past, invalid roles)"},
+        403: {"description": "Insufficient permissions"},
+        404: {"description": "User not found"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_create_apikey(
     user_id: str,
     apikey: APIKeyCreateRequest,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE])),
 ) -> APIKeyCreateResponse:
+    """Create a new API key for a specific user.
+    
+    This endpoint allows administrators to create API keys for any user.
+    """
     return _create_apikey(session, user_id, apikey)
 
 
@@ -1272,14 +1373,29 @@ async def api_create_apikey(
     "/api/v1/user/apikey",
     response_model=APIKeyCreateResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Create a new API key for the authenticated user.",
+    description="""Create a new API key for the authenticated user.
+    
+    This endpoint allows users to create API keys for themselves.
+    Cannot be called using an API key session.
+    """,
+    responses={
+        200: {"description": "API key created successfully"},
+        400: {"description": "Invalid input (e.g., expiration in past, invalid roles)"},
+        403: {"description": "Cannot use API key to create API keys"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_create_own_apikey(
-    apikey: APIKeyCreateRequest, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    apikey: APIKeyCreateRequest, 
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> APIKeyCreateResponse:
-    # check if the session is called by an apikey
+    """Create a new API key for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
-        raise HTTPException(status_code=403, detail="You cannot create the API key using an API key session. Please use a user session.")
+        logger.warning(f"Attempt to create API key using API key session: {session.id}")
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot create an API key using an API key session. Please use a user session."
+        )
     
     return _create_apikey(session, session.user_id, apikey)
 
@@ -1288,11 +1404,26 @@ async def api_create_own_apikey(
     "/api/v1/user/{user_id}/apikey/{apikey_id}",
     response_model=OK,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Delete a specific API key for a user.",
+    description="""Delete a specific API key for a user.
+    
+    Requires BOSE_ROLE permission.
+    """,
+    responses={
+        200: {"description": "API key deleted successfully"},
+        403: {"description": "Insufficient permissions or API key doesn't belong to user"},
+        404: {"description": "User or API key not found"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_delete_apikey(
-    user_id: str, apikey_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    user_id: str, 
+    apikey_id: str, 
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> OK:
+    """Delete a specific API key for a user.
+    
+    This endpoint allows administrators to delete any user's API key by ID.
+    """
     return _delete_apikey(user_id, apikey_id)
 
 
@@ -1300,14 +1431,29 @@ async def api_delete_apikey(
     "/api/v1/user/apikey/{apikey_id}",
     response_model=OK,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Delete one of *your* API keys.",
+    description="""Delete one of your own API keys.
+    
+    This endpoint allows users to delete their own API keys by ID.
+    Cannot be called using an API key session.
+    """,
+    responses={
+        200: {"description": "API key deleted successfully"},
+        403: {"description": "Cannot use API key to delete API keys"},
+        404: {"description": "API key not found"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_delete_own_apikey(
-    apikey_id: str, session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE]))
+    apikey_id: str, 
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE]))
 ) -> OK:
-    # check if the session is called by an apikey
+    """Delete a specific API key for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
-        raise HTTPException(status_code=403, detail="You cannot delete the API key using an API key session. Please use a user session.")
+        logger.warning(f"Attempt to delete API key using API key session: {session.id}")
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot delete an API key using an API key session. Please use a user session."
+        )
 
     return _delete_apikey(session.user_id, apikey_id)
 
@@ -1316,14 +1462,28 @@ async def api_delete_own_apikey(
     "/api/v1/user/{user_id}/apikey/{apikey_id}",
     response_model=APIKeyResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Update a specific API key.",
+    description="""Update a specific API key.
+    
+    Requires BOSE_ROLE permission.
+    """,
+    responses={
+        200: {"description": "API key updated successfully"},
+        400: {"description": "Invalid input (e.g., expiration in past, invalid roles)"},
+        403: {"description": "Insufficient permissions or API key doesn't belong to user"},
+        404: {"description": "User or API key not found"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_update_apikey(
     user_id: str,
     apikey_id: str,
     apikey: APIKeyPutRequest,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE])),
 ) -> APIKeyResponse:
+    """Update a specific API key for a user.
+    
+    This endpoint allows administrators to update any user's API key by ID.
+    """
     return _update_apikey(user_id, apikey_id, apikey)
 
 
@@ -1331,16 +1491,31 @@ async def api_update_apikey(
     "/api/v1/user/apikey/{apikey_id}",
     response_model=APIKeyResponse,
     dependencies=[Depends(LVL2_RATE_LIMITER)],
-    description="Update one of *your* API keys.",
+    description="""Update one of your own API keys.
+    
+    This endpoint allows users to update their own API keys by ID.
+    Cannot be called using an API key session.
+    """,
+    responses={
+        200: {"description": "API key updated successfully"},
+        400: {"description": "Invalid input (e.g., expiration in past, invalid roles)"},
+        403: {"description": "Cannot use API key to update API keys"},
+        404: {"description": "API key not found"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def api_update_own_apikey(
     apikey_id: str,
     apikey: APIKeyPutRequest,
-    session: Union[SessionUser, SessionAPIKey]= Depends(auth([BOSE_ROLE])),
+    session: Union[SessionUser, SessionAPIKey] = Depends(auth([BOSE_ROLE])),
 ) -> APIKeyResponse:
-    # check if the session is called by an apikey
+    """Update a specific API key for the currently authenticated user."""
     if isinstance(session, SessionAPIKey):
-        raise HTTPException(status_code=403, detail="You cannot update the API key using an API key session. Please use a user session.")
+        logger.warning(f"Attempt to update API key using API key session: {session.id}")
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot update an API key using an API key session. Please use a user session."
+        )
 
     return _update_apikey(session.user_id, apikey_id, apikey)
 
