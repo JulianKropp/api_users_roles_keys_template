@@ -533,6 +533,8 @@ class AudioPeerManager:
 
             await asyncio.sleep(1)  # Check every second
 
+APM = AudioPeerManager(CONFIG.WEBRTC_TIMEOUT)
+
 class OfferRequest(BaseModel):
     sdp: str
     type: str

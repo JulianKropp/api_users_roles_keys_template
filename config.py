@@ -2,7 +2,7 @@ import logging
 import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Iterable, Mapping, get_args, get_origin
+from typing import Any, Callable, ClassVar, Iterable, Mapping, get_args, get_origin, Literal
 import uuid
 from fastapi_limiter.depends import RateLimiter
 
@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 # helpers & converters
 # ----------------------------------------------------------------------------
 
+STATUS: Literal["starting", "running", "stopping", "stopped"] = "starting"
 
 def _str_to_bool(value: str) -> bool:
     """Return ``True`` for typical truthy strings ("1", "yes", "true", "on")."""

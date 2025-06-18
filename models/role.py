@@ -28,7 +28,11 @@ class Endpoint(EmbeddedDocument):
     path_filter = StringField(required=True)
 
 
+from mongoengine import Document
+from mongoengine.queryset.manager import QuerySetManager  # type: ignore
+
 class Role(Document):
+    objects: QuerySetManager
     _signals_connected: ClassVar[bool] = False
     
     id = StringField(primary_key=True, required=True, default=lambda: f"ROLE-{uuid.uuid4()}")
