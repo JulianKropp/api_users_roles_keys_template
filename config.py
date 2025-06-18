@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Iterable, Mapping, get_args, get_origin
 import uuid
+from fastapi_limiter.depends import RateLimiter
 
 from dotenv import load_dotenv
 
@@ -17,12 +18,41 @@ def _str_to_bool(value: str) -> bool:
     return value.lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _rate_limiter_converter(raw: str | RateLimiter) -> RateLimiter:
+    """
+    Accepts:
+      • "6000"           → RateLimiter(times=6000, minutes=1)
+      • "6000,1" or "6000/1"
+      • already-built RateLimiter -> returned unchanged
+    """
+    if isinstance(raw, RateLimiter):          # already converted (rare)
+        return raw
+
+    if not isinstance(raw, str):
+        raise TypeError("Expected str for RateLimiter env var")
+
+    parts = raw.replace("/", ",").split(",")
+    try:
+        times = int(parts[0])
+        minutes = int(parts[1]) if len(parts) > 1 else 1
+    except (ValueError, IndexError):
+        raise ValueError(
+            "Rate limiter must be 'TIMES' or 'TIMES,MINUTES' (e.g. '6000' or '6000,5')"
+        ) from None
+
+    if times <= 0 or minutes <= 0:
+        raise ValueError("TIMES and MINUTES must be positive integers")
+
+    return RateLimiter(times=times, minutes=minutes)
+
+
 _CONVERTERS: dict[type, Callable[[str], Any]] = {
     bool: _str_to_bool,
     int: int,
     float: float,
     str: str,
     Path: Path,
+    RateLimiter: _rate_limiter_converter,
 }
 
 
@@ -106,6 +136,26 @@ class Config:
     MONGO_DB_NAME: str = field(
         default="user_management",
         metadata={"env": "MONGO_DB_NAME"},
+    )
+
+    API_LVL0_RATE_LIMITER: RateLimiter = field(
+        default=RateLimiter(times=6000, minutes=1),
+        metadata={"env": "API_LVL0_RATE_LIMITER"},
+    )
+
+    API_LVL1_RATE_LIMITER: RateLimiter = field(
+        default=RateLimiter(times=600, minutes=1),
+        metadata={"env": "API_LVL1_RATE_LIMITER"},
+    )
+
+    API_LVL2_RATE_LIMITER: RateLimiter = field(
+        default=RateLimiter(times=60, minutes=1),
+        metadata={"env": "API_LVL2_RATE_LIMITER"},
+    )
+
+    API_LVL3_RATE_LIMITER: RateLimiter = field(
+        default=RateLimiter(times=6, minutes=1),
+        metadata={"env": "API_LVL3_RATE_LIMITER"},
     )
 
     # MODEL: str = field(
