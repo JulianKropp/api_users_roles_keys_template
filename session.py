@@ -11,10 +11,10 @@ import json
 # Async Redis client  (pip install redis)
 import redis.asyncio as redis
 
-from api_key import ApiKey
+from models.api_key import ApiKey
 from config import Config
-from user import User
-from role import Role
+from models.user import User
+from models.role import Role
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -552,8 +552,8 @@ class SessionManager:
 async def test_session_manager() -> None:
     from mongoengine import connect
     from mongoengine.connection import disconnect as mongo_disconnect
-    from role import Role
-    from user import User
+    from models.role import Role
+    from models.user import User
 
     # Disconnect any existing connections to start fresh
     mongo_disconnect()

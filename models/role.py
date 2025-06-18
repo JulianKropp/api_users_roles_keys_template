@@ -49,8 +49,8 @@ def cleanup_role_references(sender, document, **kwargs):
     This ensures referential integrity when a role is deleted.
     """
     # Import here to avoid circular imports
-    from user import User
-    from api_key import ApiKey
+    from .user import User
+    from .api_key import ApiKey
     
     try:
         # Remove role from all users' roles lists

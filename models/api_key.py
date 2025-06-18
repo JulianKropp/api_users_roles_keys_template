@@ -17,8 +17,8 @@ from mongoengine.fields import (
     ReferenceField,
 )
 
-from user import User
-from role import Role
+from .user import User
+from .role import Role
 
 class ApiKey(Document):
     _signals_connected: ClassVar[bool] = False
@@ -87,7 +87,7 @@ def cleanup_apikey_references(sender, document, **kwargs):
     """
     if document.user and document in document.user.api_keys:
         # Use atomic operation to remove the reference
-        from user import User
+        from .user import User
         User.objects(id=document.user.id).update_one(pull__api_keys=document)
 
 # Connect the signal handler for ApiKey deletion

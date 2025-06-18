@@ -27,9 +27,9 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from config import Config
 from mongoengine import Document, connect
 from mongoengine import disconnect # type: ignore
-from user import User
-from role import Endpoint, Role, Method
-from api_key import ApiKey
+from models.user import User
+from models.role import Endpoint, Role, Method
+from models.api_key import ApiKey
 from session import Session, SessionWebRTC, SessionAPIKey, SessionUser, SessionManager
 from webrtc import AudioPeerManager, AudioPeer, ErrorResponse, OfferRequest, OfferResponse, OggOpusRecorder, PeerIDRequest, StatusResponse
 
