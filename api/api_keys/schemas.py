@@ -25,10 +25,3 @@ class APIKeyCreateRequest(BaseModel):
 class APIKeyPutRequest(BaseModel):
     roles: Optional[List[str]] = None
     expiration: Optional[datetime] = None
-
-class WebRTCSession(BaseModel):
-    id: str
-    expiration_date: datetime
-    creation_date: datetime
-    user_id: str
-    parent_session_id: str

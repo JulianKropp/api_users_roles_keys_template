@@ -180,12 +180,14 @@ import api.system.endpoints
 import api.roles.endpoints
 import api.users.endpoints
 import api.api_keys.endpoints
+import api.webrtc.endpoints
 
 app.include_router(api.auth.endpoints.router)
 app.include_router(api.system.endpoints.router)
 app.include_router(api.roles.endpoints.router)
 app.include_router(api.users.endpoints.router)
 app.include_router(api.api_keys.endpoints.router)
+app.include_router(api.webrtc.endpoints.router)
 
 
 # ---------------------------
