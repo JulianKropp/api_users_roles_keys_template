@@ -1,7 +1,13 @@
 # API template for user/roles/api_keys
 
-## Setup:
-### Create `.env` file
+## Prerequisites
+- Python 3.8+
+- [uv](https://github.com/astral-sh/uv) (A fast Python package and project manager)
+- Docker and Docker Compose
+
+## Setup
+
+### 1. Create `.env` file
 ```bash
 cat > .env <<'EOF'
 HOST="0.0.0.0"
@@ -17,22 +23,50 @@ MONGO_DB_NAME="user_management"
 EOF
 ```
 
-### Start MongoDB and Redis
+### 2. Start MongoDB and Redis
 ```bash
 docker compose up -d
 ```
 
-### Install dependencies in a virtual environment
+### 3. Install dependencies and set up the environment
 ```bash
-python -m venv .venv
+# Install uv if you haven't already
+curl -sSf https://astral.sh/uv/install.sh | sh
+
+# Create and activate virtual environment
+uv venv
 source .venv/bin/activate
-pip install -r requirements.txt
+
+# Install dependencies
+uv pip install -e ".[dev]"  # For development with all dev dependencies
+# or for production:
+# uv pip install .
 ```
 
-### Run the application
+### 4. Run the application
 ```bash
-python3 main.py
+uvicorn main:app --reload
 ```
 
-### Done!
-Open your browser and go to [http://localhost:8000/](http://localhost:8000/) and to [http://localhost:8000/docs#/](http://localhost:8000/docs#/) to see the API documentation.
+### 5. Access the application
+- API Docs (Swagger UI): [http://localhost:8000/docs](http://localhost:8000/docs)
+- ReDoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+- Raw OpenAPI schema: [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
+
+## Development
+
+### Running tests
+```bash
+pytest
+```
+
+### Type checking
+```bash
+mypy .
+```
+
+### Updating dependencies
+Edit `pyproject.toml` and run:
+```bash
+uv pip install -e ".[dev]"
+```

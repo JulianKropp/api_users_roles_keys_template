@@ -1,7 +1,16 @@
-*.ogg
-data
-data/*
+# Environment and local files
 .env
+.venv/
+.env.*.local
+
+# Local data
+data/
+data/*
+*.ogg
+
+# uv specific
+.uv/
+.uvcache/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
