@@ -28,6 +28,7 @@ LOGOUT_SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:*"
 USER_SESSION_KEY = "session:{user_id}:sessions:{session_id}:data"
 APIKEY_SESSION_KEY = "session:{user_id}:api_keys:{apikey_id}:sessions:{session_id}:data"
 WEBRTC_SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:node:{node_id}:webrtc:{webrtc_id}:data"
+WS_SESSION_KEY = "session:{user_id}:{user_or_api_session}:{session_id}:node:{node_id}:ws:{ws_id}:data"
 
 CONFIG = Config()
 
@@ -69,6 +70,24 @@ def build_webrtc_session_key(user_id: str, user_or_api_session: str, session_id:
         session_id=session_id,
         node_id=node_id,
         webrtc_id=webrtc_id
+    )
+
+def build_ws_session_key(user_id: str, user_or_api_session: str, session_id: str, ws_id: str, node_id: str = CONFIG.NODE_ID) -> str:
+    if user_or_api_session == "user":
+        user_or_api_session = "sessions"
+    elif user_or_api_session == "api_key":
+        user_or_api_session = "api_keys"
+    elif user_or_api_session == "*":
+        user_or_api_session = "*"
+    else:
+        raise ValueError("user_or_api_session must be 'user' or 'api_key'")
+    
+    return WS_SESSION_KEY.format(
+        user_id=user_id,
+        user_or_api_session=user_or_api_session,
+        session_id=session_id,
+        node_id=node_id,
+        ws_id=ws_id
     )
 
 def build_logout_session_key(user_id: str = "*", user_or_api_session: str = "*", session_id: str = "*") -> str:
@@ -267,6 +286,50 @@ class SessionWebRTC(Session):
     @classmethod
     def from_json(cls, json_str: str) -> "SessionWebRTC":
         return cls.from_dict(json.loads(json_str))
+
+
+@dataclass
+class SessionWS(Session):
+    _id: str = field(default_factory=lambda: f"SESSION-WS-{uuid.uuid4()}")
+    parent_session_id: str = ""
+
+    def to_dict(self) -> dict:
+        """Convert the Session object into a dictionary for JSON serialization."""
+        return {
+            "_id": self._id,
+            "creation_date": datetime_to_str(self.creation_date),
+            "expiration_date": datetime_to_str(self.expiration_date),
+            "user_id": self.user_id,
+            "parent_session_id": self.parent_session_id,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> "SessionWS":
+        """
+        Create a Session object from a dictionary.
+        This method converts ISO-formatted datetime strings back to datetime objects 
+        and rebuilds the nested User object.
+        """        
+        # Convert string dates back to datetime objects.
+        creation_date = str_to_datetime(data["creation_date"])
+        expiration_date = str_to_datetime(data["expiration_date"])
+
+        if creation_date is None:
+            raise ValueError("creation_date is required")
+        if expiration_date is None:
+            raise ValueError("expiration_date is required")
+        
+        return cls(
+            user_id=data["user_id"],
+            parent_session_id=data["parent_session_id"],
+            creation_date=creation_date,
+            expiration_date=expiration_date,
+            _id=data["_id"]
+        )
+    
+    @classmethod
+    def from_json(cls, json_str: str) -> "SessionWS":
+        return cls.from_dict(json.loads(json_str))
     
 # --------------------------------------------------------------------------- #
 #  SessionManager
@@ -361,6 +424,35 @@ class SessionManager:
         async with self.lock:
             await self.redis.set(key, webrtc_session.to_json(), ex=CONFIG.WEBRTC_TIMEOUT*2)
         return webrtc_session
+        
+    async def login_ws(self, session: Union[SessionUser, SessionAPIKey]) -> SessionWS:
+        """
+        Create a WebSocket session for the given user or API key session.
+        This is a placeholder implementation, as WebSocket sessions would typically
+        involve more complex connection management.
+        """
+        if not isinstance(session, (SessionUser, SessionAPIKey)):
+            raise TypeError(
+                "login_ws expects a SessionUser or SessionAPIKey, "
+                f"got {type(session).__name__}"
+            )
+
+        ws_session = SessionWS(
+            user_id=session.user_id,
+            parent_session_id=session.id,
+            expiration_date=session.expiration_date,
+        )
+
+        key = build_ws_session_key(
+            user_id=session.user_id,
+            user_or_api_session="user" if isinstance(session, SessionUser) else "api_key",
+            session_id=session.id,
+            ws_id=ws_session.id
+        )
+
+        async with self.lock:
+            await self.redis.set(key, ws_session.to_json(), ex=CONFIG.WEBRTC_TIMEOUT*2)  # Using same timeout as WebRTC for now
+        return ws_session
 
     async def _get_keys(self, key_pattern: str, first_only: bool = False) -> List[str]:
         keys: List[str] = []
@@ -480,6 +572,13 @@ class SessionManager:
             if raw:
                 sw = SessionWebRTC.from_json(raw)
                 sessions[sw.id] = sw
+                
+        # ws-sessions
+        async for key in self.redis.scan_iter(match=build_ws_session_key(user_id="*", user_or_api_session="user", session_id="*", ws_id="*")[:-5] + "*"):
+            raw = await self.redis.get(key)
+            if raw:
+                sws = SessionWS.from_json(raw)
+                sessions[sws.id] = sws
 
         return sessions
 
@@ -545,6 +644,72 @@ class SessionManager:
             if raw:
                 webrtc_sessions.append(SessionWebRTC.from_json(raw))
         return webrtc_sessions
+        
+    async def get_ws_session(self, session_id: str) -> Optional[SessionWS]:
+        """
+        Get a specific WebSocket session by ID.
+        """
+        pattern_key: str = build_session_key(session_id=session_id)
+        keys = await self._get_keys(pattern_key)
+        if len(keys) == 0:
+            return None
+        value = await self._get_value(keys[0])
+
+        if value is None:
+            return None
+
+        encoded_data = value.decode() if isinstance(value, (bytes, bytearray)) else value
+
+        # Check if this is a WebSocket session
+        if ":ws:" in keys[0]:
+            return SessionWS.from_json(encoded_data)
+        return None
+        
+    async def get_ws_sessions(self, user_id: str = "*", user_or_api_session_type: str = "*", session_id: str = "*", ws_id: str = "*", node_id: str = "*") -> List[SessionWS]:
+        """
+        Get WebSocket sessions matching the specified criteria.
+        """
+        sessions: List[SessionWS] = []
+        pattern = build_ws_session_key(
+            user_id=user_id,
+            user_or_api_session=user_or_api_session_type,
+            session_id=session_id,
+            node_id=node_id,
+            ws_id=ws_id
+        )
+
+        async for key in self.redis.scan_iter(match=pattern):
+            raw = await self.redis.get(key)
+            if raw:
+                # all data should be WebSocket keys
+                # "session:*:{user_or_api_session}:*:node:{node_id}:ws:*:data"
+                sws = SessionWS.from_json(raw)
+                sessions.append(sws)
+        return sessions
+        
+    async def get_ws_sessions_from_session(self, session: Union[SessionUser, SessionAPIKey]) -> List[SessionWS]:
+        """
+        Get all WebSocket sessions associated with a user or API key session.
+        """
+        if not isinstance(session, (SessionUser, SessionAPIKey)):
+            raise TypeError(
+                "get_ws_sessions_from_session expects a SessionUser or SessionAPIKey, "
+                f"got {type(session).__name__}"
+            )
+
+        pattern = build_ws_session_key(
+            user_id=session.user_id,
+            user_or_api_session="user" if isinstance(session, SessionUser) else "api_key",
+            session_id=session.id,
+            node_id="*",
+            ws_id="*"
+        )
+        ws_sessions: List[SessionWS] = []
+        async for key in self.redis.scan_iter(match=pattern):
+            raw = await self.redis.get(key)
+            if raw:
+                ws_sessions.append(SessionWS.from_json(raw))
+        return ws_sessions
 
 
 
