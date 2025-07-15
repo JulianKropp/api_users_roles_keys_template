@@ -2,50 +2,151 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>FastAPI WebSocket Demo</title>
+  <title>WebSocket Demo</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; }
-    #log { border: 1px solid #ddd; padding: .5rem; height: 16rem; overflow-y: auto; }
-    #msg { width: 70%; }
+    body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
+    #log { border: 1px solid #ddd; padding: .5rem; height: 20rem; overflow-y: auto; margin-bottom: 1rem; background: #f9f9f9; }
+    #msg { width: 70%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; }
+    button { padding: 0.5rem 1rem; background: #0066cc; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:hover { background: #0055aa; }
+    .controls { margin-bottom: 1rem; }
+    .message { padding: 0.25rem 0; border-bottom: 1px solid #eee; }
+    .sent { color: #0066cc; }
+    .received { color: #006600; }
+    .system { color: #666; font-style: italic; }
+    .error { color: #cc0000; font-weight: bold; }
+    .json { font-family: monospace; white-space: pre-wrap; }
   </style>
 </head>
 <body>
-  <h1>FastAPI WebSocket Demo</h1>
+  <h1>WebSocket Demo</h1>
+  
+  <div class="controls">
+    <input id="session" type="text" placeholder="Enter client ID" value="user-1" />
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+  </div>
 
   <div id="log"></div>
-  <br />
-  <input id="msg" type="text" placeholder="Type a message" autocomplete="off" />
-  <button id="send">Send</button>
+  
+  <div class="controls">
+    <input id="msg" type="text" placeholder="Type a message" autocomplete="off" disabled />
+    <button id="send" disabled>Send</button>
+  </div>
 
   <script>
-    const ws = new WebSocket(`ws://${location.host}/ws`);
+    // Elements
     const logEl = document.getElementById("log");
     const msgInput = document.getElementById("msg");
     const sendBtn = document.getElementById("send");
-
-    function log(message) {
+    const sessionInput = document.getElementById("session");
+    const connectBtn = document.getElementById("connect");
+    const disconnectBtn = document.getElementById("disconnect");
+    
+    // WebSocket connection
+    let ws = null;
+    
+    function log(message, type = 'system') {
       const line = document.createElement("div");
-      line.textContent = message;
+      line.className = `message ${type}`;
+      
+      if (typeof message === 'object') {
+        try {
+          const formatted = JSON.stringify(message, null, 2);
+          line.innerHTML = `<div class="json">${formatted}</div>`;
+        } catch (e) {
+          line.textContent = message.toString();
+        }
+      } else {
+        line.textContent = message;
+      }
+      
       logEl.appendChild(line);
       logEl.scrollTop = logEl.scrollHeight; // auto-scroll
     }
-
-    ws.onopen = () => log("✅ WebSocket opened");
-    ws.onmessage = (event) => log("⬅️  " + event.data);
-    ws.onclose = () => log("❌ WebSocket closed");
-
-    sendBtn.onclick = () => {
+    
+    function connect() {
+      try {
+        log(`Connecting`);
+        ws = new WebSocket(`ws://${location.host}/ws`);
+        
+        ws.onopen = () => {
+          log("✅ WebSocket connected");
+          msgInput.disabled = false;
+          sendBtn.disabled = false;
+          connectBtn.disabled = true;
+          disconnectBtn.disabled = false;
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            log(data, "received");
+          } catch (e) {
+            log("⬅️ " + event.data, "received");
+          }
+        };
+        
+        ws.onclose = () => {
+          log("❌ WebSocket disconnected");
+          msgInput.disabled = true;
+          sendBtn.disabled = true;
+          connectBtn.disabled = false;
+          disconnectBtn.disabled = true;
+        };
+        
+        ws.onerror = (error) => {
+          log("Error: " + error.message, "error");
+        };
+      } catch (error) {
+        log("Connection error: " + error.message, "error");
+      }
+    }
+    
+    function disconnect() {
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+    }
+    
+    function sendMessage() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        log("WebSocket not connected", "error");
+        return;
+      }
+      
       const text = msgInput.value.trim();
       if (!text) return;
-      log("➡️  " + text);
-      ws.send(text);          // ← send to server
-      msgInput.value = "";
+      
+      try {
+        // Create a message object
+        const message = {
+          type: "message",
+          text: text
+        };
+        
+        log(message, "sent");
+        ws.send(JSON.stringify(message));
+        msgInput.value = "";
+      } catch (e) {
+        log("Error sending message: " + e.message, "error");
+      }
+    }
+    
+    // Event listeners
+    connectBtn.onclick = connect;
+    disconnectBtn.onclick = disconnect;
+    sendBtn.onclick = sendMessage;
+    
+    // Send on Enter
+    msgInput.onkeydown = (e) => {
+      if (e.key === "Enter") sendMessage();
     };
 
-    // Convenience: send on Enter
-    msgInput.onkeydown = (e) => {
-      if (e.key === "Enter") sendBtn.onclick();
-    };
+    // Log startup
+    log("WebSocket Demo Ready");
+    log("Enter a client ID and click Connect to start");
   </script>
 </body>
 </html>
